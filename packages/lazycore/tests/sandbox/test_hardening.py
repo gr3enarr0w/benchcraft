@@ -39,17 +39,20 @@ pytestmark_macos = pytest.mark.skipif(
 
 
 @pytestmark_macos
-def test_chmod_000_file_under_default_policy_is_not_misclassified_as_policy_blocked():
-    """Concrete false-positive scenario from the finding: `cat` on a
-    permission-000 file under the DEFAULT policy (where
-    `build_sbpl_profile` emits an unconditional, unrestricted
-    `(allow file-read*)` -- Seatbelt never fires for reads at all here).
-
-    This proves the false positive described in the finding is eliminated
-    for this concrete, representative case (a read-only command whose
-    resource class the active policy does not restrict at all) -- it does
-    not claim the heuristic is now perfect for arbitrary commands/policies;
-    see `_classify_denial`'s docstring for the honest scope of the fix.
+def test_chmod_000_file_is_now_indistinguishable_from_a_seatbelt_denial():
+    """Documents the deliberate behavior change from the Finding-1 fix
+    (lazycore.sandbox default-read-deny, see `seatbelt.py`'s
+    `build_sbpl_profile`): reads are no longer ever fully unrestricted for
+    any policy (not even the default), so `_classify_denial` can no longer
+    prove a "Permission denied" on a read-only command is *definitely* an
+    ordinary DAC error rather than a genuine (if redundant) Seatbelt
+    denial -- even when the file IS inside `allowed_read_paths` and the
+    real cause is a chmod 000 DAC error, Seatbelt's own read restriction
+    could equally have produced an identical-looking denial for some other
+    path. `_classify_denial` therefore no longer attempts the downgrade
+    for read-only commands (see its docstring's "retired precision case"
+    section) -- this is the accepted, documented trade-off for closing the
+    unrestricted-reads hole, not a regression to be fixed here.
     """
     if os.geteuid() == 0:
         pytest.skip("chmod 000 does not deny root; cannot exercise this DAC error as root")
@@ -60,7 +63,11 @@ def test_chmod_000_file_under_default_policy_is_not_misclassified_as_policy_bloc
         blocked_file.write_text("secret content")
         blocked_file.chmod(0o000)
         try:
-            result = executor.run_command(["/bin/cat", str(blocked_file)])
+            # Even though tmp_dir is explicitly granted via
+            # allowed_read_paths (so Seatbelt itself would allow reading
+            # this file), the chmod 000 DAC error still causes cat to fail.
+            policy = SandboxPolicy(allowed_read_paths=(tmp_dir,))
+            result = executor.run_command(["/bin/cat", str(blocked_file)], policy=policy)
         finally:
             blocked_file.chmod(0o644)  # restore so tempdir cleanup can remove it
 
@@ -68,9 +75,10 @@ def test_chmod_000_file_under_default_policy_is_not_misclassified_as_policy_bloc
         # DAC error, not a no-op) ...
         assert result.exit_code != 0
         assert "Permission denied" in result.stderr
-        # ... but must NOT be misclassified as a Seatbelt policy denial,
-        # since the default policy places zero restriction on reads.
-        assert result.policy_blocked is False
+        # ... and per the retired precision case, this is now classified
+        # as policy_blocked=True (the heuristic no longer distinguishes
+        # this from a genuine Seatbelt denial) -- see docstring above.
+        assert result.policy_blocked is True
 
 
 @pytestmark_macos

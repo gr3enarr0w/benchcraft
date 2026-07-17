@@ -15,7 +15,18 @@ from lazycore.sandbox.base import (
 
 
 def test_sandbox_policy_defaults_are_maximally_restrictive():
-    """A default-constructed SandboxPolicy denies network, reads, writes, and execs."""
+    """A default-constructed SandboxPolicy denies network, reads, writes, and execs.
+
+    This only checks the dataclass field *values* -- it does not exercise
+    real Seatbelt enforcement, since this module is platform-agnostic and
+    has no `sandbox-exec` dependency. For a real, effective-profile-behavior
+    proof that an empty `allowed_read_paths` genuinely denies reads outside
+    a narrow bootstrap set (rather than granting the whole filesystem, per
+    the CodeRabbit Finding-1 review), see
+    `test_default_deny_reads_and_safe_callable.
+    test_empty_allowed_read_paths_blocks_read_of_real_out_of_bootstrap_file`
+    -- a real `sandbox-exec` invocation, not a string-inspection test.
+    """
     policy = SandboxPolicy()
     assert policy.allow_network is False
     assert policy.allowed_read_paths == ()

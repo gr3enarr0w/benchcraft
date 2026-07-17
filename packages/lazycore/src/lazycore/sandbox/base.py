@@ -108,12 +108,19 @@ class SandboxPolicy:
             connections at all. When ``False``, executors should apply a
             default-deny egress policy.
         allowed_read_paths: Filesystem paths (files or directories) the
-            sandboxed process may read. Directories are allowed
-            recursively. Paths outside this list should be unreadable to
-            the sandboxed process (subject to each backend's minimum
-            required system paths -- see each executor's docstring). Must
-            be absolute (see above); a relative entry raises ``ValueError``
-            at construction time.
+            sandboxed process may read, in addition to each backend's own
+            small, fixed, non-configurable set of bootstrap paths needed
+            for a process to start at all (see that backend's docstring,
+            e.g. :func:`~lazycore.sandbox.seatbelt.build_sbpl_profile`).
+            Directories are allowed recursively. **An empty tuple (the
+            default) means NO user-data read access** -- home directory,
+            arbitrary ``/tmp`` contents, project files, secrets, etc. are
+            all unreadable unless explicitly listed here. This is a
+            default-deny contract, not "unrestricted reads with an opt-in
+            restriction" -- if your command needs to read a file, you must
+            list it (or its containing directory) in this field. Must be
+            absolute (see above); a relative entry raises ``ValueError`` at
+            construction time.
         allowed_write_paths: Filesystem paths (files or directories) the
             sandboxed process may write to. Must be a subset of what's
             readable in spirit, but is tracked separately since "can read"
@@ -299,7 +306,7 @@ class BaseSandboxExecutor(abc.ABC):
     @abc.abstractmethod
     def run_callable(
         self,
-        func: Callable[[], object],
+        func: Callable[..., object],
         *,
         policy: SandboxPolicy | None = None,
     ) -> SandboxResult:
@@ -309,8 +316,20 @@ class BaseSandboxExecutor(abc.ABC):
         Backends that cannot practically sandbox in-process Python (e.g.
         because true isolation requires a subprocess boundary) should
         implement this by marshalling ``func`` into a subprocess-executed
-        script rather than silently running it unsandboxed. Backends that
-        can only support this via pickling should document that
-        restriction clearly.
+        script rather than silently running it unsandboxed.
+
+        **Backends must never pickle (or otherwise deserialize-on-the-way-in)
+        an arbitrary, possibly-untrusted callable in the trusted host
+        process before the sandbox boundary exists** -- doing so would
+        invoke that object's ``__reduce__``/``__reduce_ex__`` unsandboxed,
+        which is itself an arbitrary-code-execution vector. Backends that
+        need to hand a callable to a subprocess should instead require it
+        to be resolvable by a stable, re-importable name (e.g. a module-
+        level function, or a ``functools.partial`` wrapping one, with
+        JSON-serializable bound arguments), pass that name plus JSON-safe
+        arguments to the child process, and perform the actual import and
+        argument decoding *inside* the sandboxed child -- see
+        :class:`~lazycore.sandbox.seatbelt.SeatbeltSandboxExecutor`'s
+        ``run_callable`` for the reference implementation of this pattern.
         """
         raise NotImplementedError

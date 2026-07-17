@@ -19,3 +19,10 @@ def compute_answer() -> int:
 def raise_value_error() -> None:
     """Raise ValueError, a trivial picklable callable for run_callable() failure tests."""
     raise ValueError("boom from sandboxed callable")
+
+
+def add_numbers(a: int, b: int = 0) -> int:
+    """Return ``a + b``, a module-level function used to exercise
+    run_callable()'s functools.partial + JSON-serializable-args calling
+    convention (Finding 2 fix)."""
+    return a + b

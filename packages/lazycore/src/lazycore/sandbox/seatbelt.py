@@ -24,13 +24,15 @@ file I/O, network egress).
 
 from __future__ import annotations
 
-import pickle
+import functools
+import importlib
+import json
 import platform
-import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import types
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -142,6 +144,68 @@ except Exception:  # pragma: no cover -- exotic envs with no resolvable home
     _HOME_DIR = None
 
 
+#: Fixed, hardcoded, non-user-configurable set of read paths granted to
+#: *every* sandboxed run regardless of ``policy.allowed_read_paths`` (Finding
+#: 1 fix). These are backend-owned bootstrap paths needed for basically any
+#: process (including a fresh Python interpreter for ``run_callable``) to
+#: start up at all on macOS -- dynamic linker/shared libraries, coreutils,
+#: system frameworks, and locale/timezone data. This is deliberately a
+#: narrow allowlist, not "the whole system": it grants zero access to any
+#: user-data location (home directory, arbitrary ``/tmp`` entries, project
+#: directories, etc.) -- those must be explicitly listed by the caller via
+#: ``allowed_read_paths`` if a command needs to read them.
+#:
+#: Unlike caller-supplied ``allowed_read_paths``/``allowed_write_paths``
+#: entries, these are never passed through
+#: :func:`_reject_overbroad_allowed_path` -- that check exists specifically
+#: to catch *caller* input silently widening via a symlink; this list is a
+#: fixed, reviewed constant, not caller input, and several of its entries
+#: (``/bin``, ``/private/etc``) are intentionally on
+#: :data:`_FORBIDDEN_BROAD_PATHS` *for caller-supplied paths* precisely
+#: because they are broad -- but are still the correct, minimal, real-world
+#: bootstrap requirement here.
+_STATIC_BOOTSTRAP_READ_PATHS: tuple[str, ...] = (
+    "/usr/lib",
+    "/usr/bin",
+    "/bin",
+    "/System/Library/Frameworks",
+    "/System/Library/PrivateFrameworks",
+    "/private/etc",
+    "/private/var/db/timezone",
+)
+
+
+def _python_bootstrap_read_paths() -> tuple[str, ...]:
+    """The running Python interpreter's own installation prefixes.
+
+    Needed so ``run_callable``'s child-process runner script (invoked as
+    ``sys.executable <runner> ...``) can actually read its own interpreter
+    binary, stdlib, and site-packages -- without this, *any* Python
+    subprocess (not just user commands) would fail to start under the new
+    default-deny-reads profile. Includes ``sys.base_prefix``/
+    ``sys.base_exec_prefix`` in addition to ``sys.prefix``/
+    ``sys.exec_prefix`` so this also works correctly when the calling
+    process is itself running inside a virtualenv/venv (``sys.prefix``
+    alone would miss the base interpreter's stdlib in that case).
+    """
+    prefixes = {
+        sys.prefix,
+        sys.exec_prefix,
+        getattr(sys, "base_prefix", sys.prefix),
+        getattr(sys, "base_exec_prefix", sys.exec_prefix),
+    }
+    return tuple(sorted(p for p in prefixes if p))
+
+
+def _bootstrap_read_paths() -> tuple[str, ...]:
+    """Full set of hardcoded bootstrap read paths (static + Python-derived),
+    each resolved to its canonical, symlink-free form via :func:`_canonical`.
+    """
+    return tuple(
+        _canonical(p) for p in (*_STATIC_BOOTSTRAP_READ_PATHS, *_python_bootstrap_read_paths())
+    )
+
+
 def _escape_sbpl_string(value: str) -> str:
     """Escape a path for embedding in an SBPL string literal."""
     return value.replace("\\", "\\\\").replace('"', '\\"')
@@ -238,17 +302,20 @@ def build_sbpl_profile(policy: SandboxPolicy) -> str:
       file-read-metadata) -- these are not policy-configurable because
       they are required for basic process lifecycle, not for accessing
       user data.
-    - **Reads:** if ``policy.allowed_read_paths`` is empty (the default),
-      reads are left broadly allowed (``(allow file-read*)``) -- this
-      matches how most real-world agent-sandbox profiles operate in
-      practice (the write and network surfaces are the actual enforcement
-      points; unrestricted read of a single-user dev machine's filesystem
-      by a locally-invoked tool is the accepted baseline). If
-      ``allowed_read_paths`` is non-empty, reads are restricted to exactly
-      those subpaths -- this is a stricter opt-in mode, and the caller is
-      responsible for including any system paths a given command actually
-      needs to read (dynamic linker, shared libraries, etc.); omitting
-      them will cause otherwise-unrelated commands to fail to even start.
+    - **Reads: default-deny.** ``policy.allowed_read_paths`` being empty
+      (the default) means the sandboxed process has **no user-data read
+      access at all** -- not "unrestricted reads". Reads are always
+      restricted to exactly the union of two sets: (1) a small, fixed,
+      non-configurable set of backend-owned bootstrap paths needed for
+      *any* process to start at all on macOS (dynamic linker/shared
+      libraries, coreutils, system frameworks, locale/timezone data, and
+      the running Python interpreter's own install prefix -- see
+      :func:`_bootstrap_read_paths`), and (2) whatever
+      ``policy.allowed_read_paths`` explicitly lists. **If your command
+      needs to read a file, you must list it (or its containing directory)
+      in ``allowed_read_paths`` -- an empty tuple grants zero access to the
+      home directory, arbitrary ``/tmp`` contents, project files, secrets,
+      or any other user data.**
     - **Writes:** always restricted to ``policy.allowed_write_paths``
       (subpath-based). An empty tuple (the default) means no writes are
       allowed anywhere -- this is the primary enforcement demonstrated by
@@ -291,18 +358,28 @@ def build_sbpl_profile(policy: SandboxPolicy) -> str:
         "(allow mach-lookup)",
         "(allow iokit-open)",
         "(allow file-ioctl)",
+        # Reading the root directory entry itself ("/", not its contents --
+        # subpath rules below govern those) is needed by dyld/libSystem
+        # during ordinary process startup (observed empirically: without
+        # this, /bin/cat and other simple dynamically-linked binaries abort
+        # with SIGABRT before even reaching main(), regardless of which
+        # subpaths are otherwise allowed). This is a `literal` match on "/"
+        # itself, not a `subpath` -- it does not grant listing/reading of
+        # any file *under* root.
+        '(allow file-read-data (literal "/"))',
     ]
 
     lines.append("")
-    lines.append("; --- filesystem reads ---")
-    if policy.allowed_read_paths:
-        read_clauses = " ".join(
-            f'(subpath "{_escape_sbpl_string(_reject_overbroad_allowed_path(p, kind="allowed_read_paths"))}")'
-            for p in policy.allowed_read_paths
-        )
-        lines.append(f"(allow file-read* {read_clauses})")
-    else:
-        lines.append("(allow file-read*)")
+    lines.append(
+        "; --- filesystem reads: bootstrap paths (always) + allowed_read_paths ---"
+    )
+    read_paths = list(_bootstrap_read_paths())
+    for p in policy.allowed_read_paths:
+        read_paths.append(_reject_overbroad_allowed_path(p, kind="allowed_read_paths"))
+    read_clauses = " ".join(
+        f'(subpath "{_escape_sbpl_string(p)}")' for p in read_paths
+    )
+    lines.append(f"(allow file-read* {read_clauses})")
 
     lines.append("")
     lines.append("; --- filesystem writes ---")
@@ -347,6 +424,23 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
 
     **Stricter contract than the original implementation:**
 
+    - **Reads are default-deny.** An empty ``allowed_read_paths`` means the
+      sandboxed process can read *only* a small, fixed set of
+      backend-owned bootstrap paths needed to execute a process at all
+      (dynamic linker/shared libraries, coreutils, system frameworks,
+      locale/timezone data, and the running Python interpreter's own
+      install prefix) -- it grants **no** access to the home directory,
+      arbitrary ``/tmp`` contents, project files, or any other user data.
+      If your command needs to read a file, you must list it (or its
+      containing directory) in ``allowed_read_paths`` explicitly. See
+      :func:`build_sbpl_profile` and :func:`_bootstrap_read_paths` for the
+      exact bootstrap set.
+    - ``run_callable()`` never pickles the caller-supplied callable in this
+      (trusted, host) process -- only a plain module-level function, or a
+      ``functools.partial`` wrapping one with JSON-serializable bound
+      arguments, is accepted; it is re-imported by ``(module, qualname)``
+      and called *inside* the sandboxed child process. See
+      :meth:`run_callable`'s docstring.
     - ``SandboxPolicy.allowed_read_paths``/``allowed_write_paths``/
       ``working_directory`` must be absolute paths, enforced eagerly by
       :class:`~lazycore.sandbox.base.SandboxPolicy`'s own
@@ -413,39 +507,35 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
 
         This is necessarily still a heuristic, not a guarantee -- see the
         :class:`~lazycore.sandbox.base.SandboxResult.policy_blocked`
-        docstring. It is more precise than plain substring matching in one
-        specific, provable case: :func:`build_sbpl_profile` emits an
-        unconditional ``(allow file-read*)`` whenever
-        ``policy.allowed_read_paths`` is empty, meaning Seatbelt places
-        *zero* restriction on reads for that policy. If the failing command
-        is a member of ``_READ_ONLY_COMMAND_BASENAMES`` (a conservative
-        allowlist of commands that never write to the filesystem under any
-        normal flag combination) and reads are unrestricted for the active
-        policy, then Seatbelt structurally cannot have produced this
-        denial -- the profile it generated grants unconditional read
-        access -- so a "Permission denied"/"Operation not permitted" in
-        this specific combination must be an ordinary DAC error (e.g. a
-        chmod 000 file) unrelated to the sandbox.
+        docstring.
 
-        This cross-reference only rules a denial *out*; it never rules one
-        *in* beyond the original marker match. It does not attempt to
-        determine read/write/exec/network direction for arbitrary commands
-        outside the allowlist (most real-world tool invocations), so it
-        narrows -- but does not eliminate -- the false-positive surface
-        described in the confirmed finding this fixes.
+        **Historical note (retired precision case).** An earlier version of
+        this method downgraded a "Permission denied"/"Operation not
+        permitted" report to ``policy_blocked=False`` whenever the failing
+        command was a member of ``_READ_ONLY_COMMAND_BASENAMES`` *and*
+        ``policy.allowed_read_paths`` was empty -- reasoning that
+        :func:`build_sbpl_profile` at the time emitted an unconditional,
+        completely unrestricted ``(allow file-read*)`` for an empty
+        ``allowed_read_paths``, so Seatbelt could not structurally have
+        caused the denial. That invariant no longer holds: per the Finding-1
+        fix, :func:`build_sbpl_profile` now *always* restricts reads to a
+        fixed bootstrap set plus ``allowed_read_paths`` (never fully
+        unrestricted, regardless of whether ``allowed_read_paths`` is
+        empty), so a read-only command failing under *any* policy could
+        genuinely be a Seatbelt denial (e.g. the file being read is outside
+        both the bootstrap set and ``allowed_read_paths``) rather than only
+        ever an ordinary DAC error. Downgrading based on command basename
+        alone is therefore no longer sound, and this method no longer does
+        it -- ``_READ_ONLY_COMMAND_BASENAMES`` is retained only for
+        documentation/potential future use (e.g. if this method is later
+        extended to inspect which specific path a command tried to read and
+        compare it against the granted set), not used by this method's
+        current logic.
         """
         if exit_code == 0:
             return False
         combined = stdout + stderr
-        if not any(marker in combined for marker in _DENIAL_MARKERS):
-            return False
-
-        if command:
-            basename = Path(command[0]).name
-            if basename in _READ_ONLY_COMMAND_BASENAMES and not policy.allowed_read_paths:
-                return False
-
-        return True
+        return any(marker in combined for marker in _DENIAL_MARKERS)
 
     def run_command(
         self,
@@ -509,60 +599,216 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
         finally:
             Path(profile_path).unlink(missing_ok=True)
 
+    def _resolve_module_level_function(self, func: object) -> tuple[str, str]:
+        """Validate that ``func`` is a plain, re-importable module-level
+        function and return its ``(module_name, qualname)``.
+
+        Rejects anything that is not re-importable by name: lambdas, local
+        closures, bound/unbound methods, callable class instances, and
+        (crucially) any object whose ``__reduce__``/``__reduce_ex__`` could
+        run attacker-controlled code if it were ever pickled -- this
+        function never pickles ``func``, only inspects
+        ``__module__``/``__qualname__`` and re-imports by name.
+
+        Raises:
+            TypeError: If ``func`` is not a plain function object.
+            ValueError: If ``func``'s ``__module__``/``__qualname__`` do not
+                resolve back to the exact same function object (e.g. a
+                lambda, a nested/local function, or a name that has been
+                reassigned since import).
+        """
+        if not isinstance(func, types.FunctionType):
+            raise TypeError(
+                "run_callable() only supports module-level functions or "
+                "functools.partial wrapping one -- got a non-function "
+                f"object of type {type(func).__name__!r}."
+            )
+
+        qualname = getattr(func, "__qualname__", "")
+        module_name = getattr(func, "__module__", None)
+
+        if "<lambda>" in qualname or "<locals>" in qualname or not module_name:
+            raise ValueError(
+                "run_callable() only supports module-level functions or "
+                "functools.partial wrapping one, with JSON-serializable "
+                f"arguments -- got {func!r} (qualname={qualname!r}), which "
+                "looks like a lambda or a local/nested closure. Define the "
+                "target as a plain module-level function instead."
+            )
+
+        try:
+            module = importlib.import_module(module_name)
+            resolved: object = module
+            for part in qualname.split("."):
+                resolved = getattr(resolved, part)
+        except Exception as exc:
+            raise ValueError(
+                "run_callable() only supports module-level functions or "
+                "functools.partial wrapping one, with JSON-serializable "
+                f"arguments -- {module_name}.{qualname} could not be "
+                "re-imported and resolved back to the same function object "
+                f"({exc!r})."
+            ) from exc
+
+        if resolved is not func:
+            raise ValueError(
+                "run_callable() only supports module-level functions or "
+                "functools.partial wrapping one, with JSON-serializable "
+                f"arguments -- re-importing {module_name}.{qualname} does "
+                "not resolve back to the exact same function object passed "
+                "in (it may have been reassigned, or is a dynamically "
+                "generated/decorated function that does not preserve "
+                "identity)."
+            )
+
+        return module_name, qualname
+
+    def _decompose_callable(
+        self, func: Callable[..., object]
+    ) -> tuple[str, str, tuple[object, ...], dict[str, object]]:
+        """Break ``func`` down into ``(module_name, qualname, args, kwargs)``
+        without ever pickling it (Finding 2 fix).
+
+        Supports exactly two shapes:
+
+        - A plain module-level function, called with no arguments.
+        - A :func:`functools.partial` wrapping a plain module-level
+          function, whose bound ``.args``/``.keywords`` become the call
+          arguments.
+
+        Anything else (a lambda, a local closure, a bound method, a
+        callable object with a custom ``__call__``, a ``functools.partial``
+        wrapping something that is not itself a plain module-level
+        function, or one whose bound arguments are not JSON-serializable)
+        raises a clear error *before* any subprocess or pickling machinery
+        is touched -- unlike the previous ``pickle.dumps(func)``-based
+        implementation, resolving ``__module__``/``__qualname__`` and
+        calling :func:`importlib.import_module` never executes
+        attacker-controlled ``__reduce__``/``__reduce_ex__`` logic, because
+        no pickling of ``func`` itself ever happens in this process.
+
+        Raises:
+            TypeError: If ``func`` (or a partial's ``.func``) is not a
+                plain function object.
+            ValueError: If ``func`` cannot be resolved back to itself by
+                module/qualname, or its bound arguments are not
+                JSON-serializable.
+        """
+        if isinstance(func, functools.partial):
+            module_name, qualname = self._resolve_module_level_function(func.func)
+            args: tuple[object, ...] = func.args
+            kwargs: dict[str, object] = dict(func.keywords or {})
+        else:
+            module_name, qualname = self._resolve_module_level_function(func)
+            args = ()
+            kwargs = {}
+
+        try:
+            json.dumps(list(args))
+            json.dumps(kwargs)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "run_callable() only supports module-level functions or "
+                "functools.partial wrapping one, with JSON-serializable "
+                f"arguments -- the bound arguments for {module_name}."
+                f"{qualname} are not JSON-serializable ({exc!r}). Pickle is "
+                "not used for arguments (or the callable itself) because it "
+                "is unsafe to deserialize untrusted data; pass only "
+                "JSON-safe types (str, int, float, bool, None, list, dict)."
+            ) from exc
+        # The actual values (not the JSON strings validated above) are
+        # written to the payload file by run_callable() so the child
+        # process can json.load() them directly.
+
+        return module_name, qualname, args, kwargs
+
     def run_callable(
         self,
-        func: Callable[[], object],
+        func: Callable[..., object],
         *,
         policy: SandboxPolicy | None = None,
     ) -> SandboxResult:
-        """Run ``func`` in a sandboxed subprocess by pickling and re-invoking it.
+        """Run ``func`` in a sandboxed subprocess by re-importing it by name.
 
-        Since Seatbelt sandboxes an OS process, not an in-process Python
-        call, this marshals ``func`` to bytes with :mod:`pickle`, writes a
-        small runner script plus the pickled payload to a temporary
-        directory, and delegates to :meth:`run_command` to execute
-        ``python <runner> <pickle>`` under the sandbox. The runner captures
-        the callable's return value via ``repr()`` on stdout, or a
-        traceback plus a nonzero exit code if it raises. The temporary
-        directory (and the harness's own runner/payload files within it) is
-        always granted read access regardless of the caller's policy, since
-        it is internal plumbing rather than user data.
+        **Never pickles ``func`` in this (trusted, host) process.** Since
+        Seatbelt sandboxes an OS process, not an in-process Python call,
+        this needs some way to hand ``func`` to a fresh child interpreter --
+        but calling :func:`pickle.dumps` on an arbitrary, possibly
+        attacker-influenced callable *before* the sandbox exists would
+        invoke that object's ``__reduce__``/``__reduce_ex__`` unsandboxed,
+        which is itself an arbitrary-code-execution vector (this was
+        Finding 2). Instead:
+
+        1. ``func`` must be a plain module-level function, or a
+           :func:`functools.partial` wrapping one (see
+           :meth:`_decompose_callable`). Its ``__module__``/``__qualname__``
+           are resolved and independently re-imported to confirm they
+           resolve back to that exact function object.
+        2. Any bound arguments (from the ``functools.partial``, if used)
+           must be JSON-serializable -- validated via :func:`json.dumps`,
+           never :mod:`pickle`, since pickle is unsafe for untrusted data on
+           the way out of the sandbox too.
+        3. ``(module_name, qualname, args, kwargs)`` is written as plain
+           JSON to a small file in a temporary directory alongside a
+           runner script, and :meth:`run_command` executes
+           ``python <runner> <payload.json>`` under the sandbox. The
+           *child* (already-sandboxed) process is the one that calls
+           ``importlib.import_module(module_name)`` and resolves/calls the
+           function -- exactly the "perform importing inside Seatbelt"
+           structure the finding asked for.
+
+        The runner captures the callable's return value via ``repr()`` on
+        stdout, or a traceback plus a nonzero exit code if it raises. The
+        temporary directory (and the harness's own runner/payload files
+        within it) is always granted read access regardless of the
+        caller's policy, since it is internal plumbing rather than user
+        data.
 
         Raises:
-            ValueError: If ``func`` cannot be pickled (e.g. a local closure
-                or lambda) -- only module-level, picklable callables are
-                supported.
+            TypeError: If ``func`` (or a ``functools.partial``'s ``.func``)
+                is not a plain function object.
+            ValueError: If ``func`` cannot be resolved back to itself by
+                module/qualname (e.g. a lambda, local closure, or bound
+                method), or its bound arguments are not JSON-serializable.
             SandboxBackendUnavailableError: If :meth:`is_available` is False
                 on this host.
         """
         self._require_available()
         active_policy = self._resolve_policy(policy)
 
-        try:
-            payload = pickle.dumps(func)
-        except (pickle.PicklingError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                "run_callable() requires a picklable callable (e.g. a "
-                "module-level function), because the Seatbelt backend "
-                "must marshal it into a subprocess to actually sandbox "
-                "it. A local closure or lambda cannot be pickled."
-            ) from exc
+        module_name, qualname, args, kwargs = self._decompose_callable(func)
 
         with tempfile.TemporaryDirectory(prefix="lazycore-sandbox-") as tmp_dir:
-            pkl_path = Path(tmp_dir) / "callable.pkl"
-            pkl_path.write_bytes(payload)
+            payload_path = Path(tmp_dir) / "call.json"
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "module": module_name,
+                        "qualname": qualname,
+                        "args": list(args),
+                        "kwargs": kwargs,
+                    }
+                )
+            )
 
             runner_path = Path(tmp_dir) / "runner.py"
             runner_path.write_text(
                 textwrap.dedent(
                     """\
-                    import pickle
+                    import importlib
+                    import json
                     import sys
 
-                    with open(sys.argv[1], "rb") as f:
-                        func = pickle.load(f)
+                    with open(sys.argv[1], "r", encoding="utf-8") as f:
+                        call = json.load(f)
+
+                    module = importlib.import_module(call["module"])
+                    func = module
+                    for part in call["qualname"].split("."):
+                        func = getattr(func, part)
+
                     try:
-                        result = func()
+                        result = func(*call["args"], **call["kwargs"])
                     except Exception:
                         import traceback
 
@@ -575,22 +821,21 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
                 )
             )
 
-            # The harness's own temp files (script + pickled payload) must
-            # be readable regardless of the caller's policy -- this is
+            # The harness's own temp files (script + JSON payload) must be
+            # readable regardless of the caller's policy -- this is
             # internal plumbing, not user data, and mirrors how
             # run_command's own generated .sb profile file needs no
             # explicit allow-read rule (profile files are read by
             # sandbox-exec itself, before the sandbox is even active).
-            effective_policy = active_policy
-            if active_policy.allowed_read_paths:
-                effective_policy = active_policy.with_overrides(
-                    allowed_read_paths=(
-                        *active_policy.allowed_read_paths,
-                        tmp_dir,
-                    )
-                )
+            # Unlike the pre-Finding-1 default (unrestricted reads), the
+            # new default-deny-reads profile means this must always be
+            # added explicitly -- it is not implied by an empty
+            # allowed_read_paths anymore.
+            effective_policy = active_policy.with_overrides(
+                allowed_read_paths=(*active_policy.allowed_read_paths, tmp_dir)
+            )
 
             return self.run_command(
-                [sys.executable, str(runner_path), str(pkl_path)],
+                [sys.executable, str(runner_path), str(payload_path)],
                 policy=effective_policy,
             )

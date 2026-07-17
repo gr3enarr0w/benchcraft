@@ -33,6 +33,7 @@ from __future__ import annotations
 import ast
 import functools
 import re
+from pathlib import Path
 
 from lazycore.sandbox import BaseSandboxExecutor, SandboxPolicy
 from lazycore.telemetry import (
@@ -163,9 +164,37 @@ def build_probe_sandbox_policy(*, timeout_seconds: float = 10.0) -> SandboxPolic
     writes, no network access, and no non-default executables -- it is a
     pure in-memory string transform -- so the policy is maximally
     restrictive: no write paths, network denied, short timeout.
+
+    ``allowed_read_paths`` explicitly grants read access to the directory
+    *containing* this package, and the directory containing ``lazycore``
+    itself (i.e. each package's parent import-path entry, not just the
+    package's own directory). This is required, not optional, since
+    `lazycore.sandbox.SeatbeltSandboxExecutor.run_callable` (per its
+    default-deny-reads contract) re-imports ``naive_vulnerable_target`` by
+    module name *inside* the sandboxed child process -- and importing
+    ``benchcraft_lazyred.probes`` transitively imports
+    ``lazycore.sandbox`` at module scope. Python's import machinery needs
+    to enumerate/read each parent directory itself (e.g. an editable "src
+    layout" install's ``src/`` directory, or a real install's
+    ``site-packages/``) to even locate the package within it, not just
+    read files already inside it. Both are derived dynamically from each
+    package's ``__file__`` so this works both for an editable/source-layout
+    install (package source living under the repo, outside any Python
+    interpreter's own bootstrap prefix) and a normal site-packages install
+    -- and so it keeps working if lazycore and benchcraft_lazyred ever end
+    up installed from different parent directories.
     """
+    import benchcraft_lazyred as _this_package
+    import lazycore as _lazycore_package
+
+    read_paths = {
+        str(Path(_this_package.__file__).resolve().parent.parent),
+        str(Path(_lazycore_package.__file__).resolve().parent.parent),
+    }
+
     return SandboxPolicy(
         allow_network=False,
+        allowed_read_paths=tuple(sorted(read_paths)),
         allowed_write_paths=(),
         timeout_seconds=timeout_seconds,
         inherit_env=False,

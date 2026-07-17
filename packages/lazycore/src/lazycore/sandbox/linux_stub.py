@@ -104,7 +104,7 @@ class LinuxNamespaceSandboxExecutor(BaseSandboxExecutor):
 
     def run_callable(
         self,
-        func: Callable[[], object],
+        func: Callable[..., object],
         *,
         policy: SandboxPolicy | None = None,
     ) -> SandboxResult:

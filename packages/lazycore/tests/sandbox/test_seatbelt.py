@@ -137,7 +137,16 @@ def test_run_callable_executes_picklable_function_and_returns_output():
     import _callable_fixtures  # type: ignore[import-not-found]
 
     executor = SeatbeltSandboxExecutor()
-    policy = SandboxPolicy(inherit_env=True, env={"PYTHONPATH": _FIXTURES_DIR})
+    # Per the Finding-1 default-read-deny fix, the sandboxed child process
+    # can no longer read _callable_fixtures.py's containing directory just
+    # because PYTHONPATH points at it -- it must also be explicitly listed
+    # in allowed_read_paths (bootstrap paths alone do not cover arbitrary
+    # user-supplied module directories).
+    policy = SandboxPolicy(
+        inherit_env=True,
+        env={"PYTHONPATH": _FIXTURES_DIR},
+        allowed_read_paths=(_FIXTURES_DIR,),
+    )
 
     result = executor.run_callable(_callable_fixtures.compute_answer, policy=policy)
 
@@ -150,7 +159,16 @@ def test_run_callable_surfaces_exception_as_nonzero_exit():
     import _callable_fixtures  # type: ignore[import-not-found]
 
     executor = SeatbeltSandboxExecutor()
-    policy = SandboxPolicy(inherit_env=True, env={"PYTHONPATH": _FIXTURES_DIR})
+    # Per the Finding-1 default-read-deny fix, the sandboxed child process
+    # can no longer read _callable_fixtures.py's containing directory just
+    # because PYTHONPATH points at it -- it must also be explicitly listed
+    # in allowed_read_paths (bootstrap paths alone do not cover arbitrary
+    # user-supplied module directories).
+    policy = SandboxPolicy(
+        inherit_env=True,
+        env={"PYTHONPATH": _FIXTURES_DIR},
+        allowed_read_paths=(_FIXTURES_DIR,),
+    )
 
     result = executor.run_callable(_callable_fixtures.raise_value_error, policy=policy)
 
