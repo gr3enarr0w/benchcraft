@@ -14,6 +14,8 @@ would produce false negatives on true near-duplicates.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -201,5 +203,5 @@ def test_duplicate_pair_is_frozen_dataclass():
     """DuplicatePair is immutable: assigning to a field after construction
     raises."""
     pair = DuplicatePair(index_a=0, index_b=1, similarity=0.99)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         pair.similarity = 0.5  # type: ignore[misc]

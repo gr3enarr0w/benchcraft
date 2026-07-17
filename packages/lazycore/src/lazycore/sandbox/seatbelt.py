@@ -25,7 +25,6 @@ file I/O, network egress).
 from __future__ import annotations
 
 import functools
-import importlib
 import json
 import platform
 import subprocess
@@ -438,9 +437,13 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
     - ``run_callable()`` never pickles the caller-supplied callable in this
       (trusted, host) process -- only a plain module-level function, or a
       ``functools.partial`` wrapping one with JSON-serializable bound
-      arguments, is accepted; it is re-imported by ``(module, qualname)``
-      and called *inside* the sandboxed child process. See
-      :meth:`run_callable`'s docstring.
+      arguments, is accepted. Its identity is validated in this process
+      purely via ``func.__globals__`` introspection (never by importing
+      ``func.__module__``, which is a freely rewritable string an attacker
+      could point anywhere); the function is only ever imported by
+      ``(module, qualname)`` and called *inside* the sandboxed child
+      process. See :meth:`run_callable`'s and
+      :meth:`_resolve_module_level_function`'s docstrings.
     - ``SandboxPolicy.allowed_read_paths``/``allowed_write_paths``/
       ``working_directory`` must be absolute paths, enforced eagerly by
       :class:`~lazycore.sandbox.base.SandboxPolicy`'s own
@@ -607,15 +610,58 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
         closures, bound/unbound methods, callable class instances, and
         (crucially) any object whose ``__reduce__``/``__reduce_ex__`` could
         run attacker-controlled code if it were ever pickled -- this
-        function never pickles ``func``, only inspects
-        ``__module__``/``__qualname__`` and re-imports by name.
+        function never pickles ``func``.
+
+        **This validation never imports anything.** An earlier version of
+        this method verified ``func.__module__``/``__qualname__`` by calling
+        ``importlib.import_module(module_name)`` directly in this (trusted,
+        host) process and attribute-chasing ``qualname`` on the result. That
+        was itself a vulnerability of the same shape as the original
+        pickle-based Finding 2: ``__module__`` is a plain, freely writable
+        string attribute on any function object (``func.__module__ =
+        "attacker/controlled/module"`` is valid Python with no special
+        privileges required), so a caller -- or anything upstream that
+        constructs "a function" and hands it to ``run_callable`` -- could
+        make this host process import and execute arbitrary module-level
+        code *before* the identity check even ran, let alone before the
+        sandbox existed.
+
+        Instead, this method validates identity purely via introspection of
+        ``func.__globals__`` -- the dict object that *is* the namespace
+        ``func`` was actually defined in. Unlike ``__module__``/
+        ``__qualname__``, ``__globals__`` is not a re-assignable string that
+        can be pointed somewhere else after the fact by simple attribute
+        assignment; it is fixed to the defining module's namespace at
+        function-creation time. Three checks, none of which ever import
+        anything:
+
+        1. ``qualname`` must be a flat, undotted name -- i.e. ``func`` must
+           be bound directly at module level, not nested inside a class or
+           another function. (Bound/nested names would require attribute-
+           chasing through ``__globals__``, which a dict lookup by full
+           qualname string cannot do; since this method's whole contract is
+           "module-level functions", rejecting dotted names is a
+           tightening, not a regression.)
+        2. ``func.__globals__["__name__"]`` (the *actual* module ``func`` was
+           defined in) must equal ``func.__module__`` (the caller-visible,
+           possibly-tampered claim). If these disagree, ``__module__`` has
+           been reassigned since definition and is untrustworthy -- reject
+           without ever importing ``module_name`` to find out.
+        3. ``func.__globals__[qualname]`` must be ``func`` itself -- i.e.
+           the name still resolves, inside its own defining namespace, to
+           the exact same function object (not a reassigned/shadowed name).
+
+        The actual ``importlib.import_module(module_name)`` call for this
+        ``(module_name, qualname)`` pair happens later, but only ever inside
+        the already-sandboxed child process (see the runner script built by
+        :meth:`run_callable`) -- never here in the host.
 
         Raises:
             TypeError: If ``func`` is not a plain function object.
-            ValueError: If ``func``'s ``__module__``/``__qualname__`` do not
-                resolve back to the exact same function object (e.g. a
-                lambda, a nested/local function, or a name that has been
-                reassigned since import).
+            ValueError: If ``func``'s ``qualname`` is not a flat module-level
+                name, or its ``__module__``/``__globals__`` do not agree on
+                where it lives, or it cannot be resolved back to the exact
+                same function object from within its own ``__globals__``.
         """
         if not isinstance(func, types.FunctionType):
             raise TypeError(
@@ -636,29 +682,38 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
                 "target as a plain module-level function instead."
             )
 
-        try:
-            module = importlib.import_module(module_name)
-            resolved: object = module
-            for part in qualname.split("."):
-                resolved = getattr(resolved, part)
-        except Exception as exc:
+        if "." in qualname:
             raise ValueError(
                 "run_callable() only supports module-level functions or "
-                "functools.partial wrapping one, with JSON-serializable "
-                f"arguments -- {module_name}.{qualname} could not be "
-                "re-imported and resolved back to the same function object "
-                f"({exc!r})."
-            ) from exc
+                "functools.partial wrapping one -- "
+                f"{module_name}.{qualname} is not a flat module-level name "
+                "(it looks like a method, nested class attribute, or "
+                "otherwise non-top-level binding)."
+            )
 
-        if resolved is not func:
+        globals_dict = func.__globals__
+        if globals_dict.get("__name__") != module_name:
             raise ValueError(
                 "run_callable() only supports module-level functions or "
                 "functools.partial wrapping one, with JSON-serializable "
-                f"arguments -- re-importing {module_name}.{qualname} does "
-                "not resolve back to the exact same function object passed "
-                "in (it may have been reassigned, or is a dynamically "
-                "generated/decorated function that does not preserve "
-                "identity)."
+                f"arguments -- {func!r}'s __module__ ({module_name!r}) does "
+                "not match the __name__ of its own __globals__ "
+                f"({globals_dict.get('__name__')!r}). This function refuses "
+                "to import module_name to check this (that would execute "
+                "attacker-influenced module code in the trusted host "
+                "process before validation completes) -- __globals__ is "
+                "the trustworthy source of truth for where this function "
+                "actually lives."
+            )
+
+        if globals_dict.get(qualname) is not func:
+            raise ValueError(
+                "run_callable() only supports module-level functions or "
+                "functools.partial wrapping one, with JSON-serializable "
+                f"arguments -- {module_name}.{qualname} does not resolve "
+                "back to the exact same function object inside its own "
+                "__globals__ (it may have been reassigned since "
+                "definition)."
             )
 
         return module_name, qualname
@@ -680,12 +735,18 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
         callable object with a custom ``__call__``, a ``functools.partial``
         wrapping something that is not itself a plain module-level
         function, or one whose bound arguments are not JSON-serializable)
-        raises a clear error *before* any subprocess or pickling machinery
-        is touched -- unlike the previous ``pickle.dumps(func)``-based
-        implementation, resolving ``__module__``/``__qualname__`` and
-        calling :func:`importlib.import_module` never executes
-        attacker-controlled ``__reduce__``/``__reduce_ex__`` logic, because
-        no pickling of ``func`` itself ever happens in this process.
+        raises a clear error *before* any subprocess, pickling, or
+        importing machinery is touched. Unlike the previous
+        ``pickle.dumps(func)``-based implementation, no pickling of ``func``
+        itself ever happens in this process. And unlike an earlier
+        iteration of *this* fix, resolving ``func``'s identity also never
+        calls :func:`importlib.import_module` in this (host) process either
+        -- :meth:`_resolve_module_level_function` validates purely via
+        ``func.__globals__`` introspection, so neither attacker-controlled
+        ``__reduce__``/``__reduce_ex__`` logic nor attacker-influenced
+        top-level module code can ever run here. The only import of
+        ``module_name`` happens later, inside the already-sandboxed child
+        process.
 
         Raises:
             TypeError: If ``func`` (or a partial's ``.func``) is not a
@@ -741,9 +802,13 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
 
         1. ``func`` must be a plain module-level function, or a
            :func:`functools.partial` wrapping one (see
-           :meth:`_decompose_callable`). Its ``__module__``/``__qualname__``
-           are resolved and independently re-imported to confirm they
-           resolve back to that exact function object.
+           :meth:`_decompose_callable`). Its identity is validated purely
+           via ``func.__globals__`` introspection (see
+           :meth:`_resolve_module_level_function`) -- this host process
+           never calls :func:`importlib.import_module` on the caller's
+           (freely rewritable) ``__module__`` string to do this, since that
+           would import and execute attacker-influenced module code here,
+           before the sandbox even exists.
         2. Any bound arguments (from the ``functools.partial``, if used)
            must be JSON-serializable -- validated via :func:`json.dumps`,
            never :mod:`pickle`, since pickle is unsafe for untrusted data on

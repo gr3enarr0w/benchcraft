@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from lazycore.sandbox.base import (
@@ -40,7 +42,7 @@ def test_sandbox_policy_defaults_are_maximally_restrictive():
 def test_sandbox_policy_is_frozen():
     """Mutating a field on a constructed SandboxPolicy raises, per its frozen=True dataclass."""
     policy = SandboxPolicy()
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         policy.allow_network = True  # type: ignore[misc]
 
 
@@ -96,7 +98,7 @@ def test_sandbox_result_succeeded_true_only_when_clean_exit():
 def test_sandbox_result_is_frozen():
     """Mutating a field on a constructed SandboxResult raises, per its frozen=True dataclass."""
     result = SandboxResult(exit_code=0, stdout="", stderr="")
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         result.exit_code = 1  # type: ignore[misc]
 
 
