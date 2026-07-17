@@ -91,25 +91,32 @@ def test_write_outside_allowed_path_is_still_classified_as_policy_blocked():
         assert not Path(forbidden_target).exists()
 
 
-@pytestmark_macos
-def test_chmod_000_file_under_restricted_read_policy_is_still_flagged():
-    """When allowed_read_paths IS configured (reads ARE restricted by the
-    generated profile), a permission error on a path outside that allowlist
-    is plausibly Seatbelt's doing, so the allowlist-based downgrade in
-    `_classify_denial` must not apply here -- this documents that the
-    fix is intentionally narrow in scope (only overrides the classification
-    when the profile provably grants unrestricted reads).
+def test_classify_denial_still_flags_denial_when_reads_are_restricted():
+    """When `allowed_read_paths` IS configured (reads ARE restricted by the
+    generated profile -- see `build_sbpl_profile`), a "Permission
+    denied"/"Operation not permitted" report is still classified as
+    `policy_blocked=True` even for a command in the read-only allowlist:
+    the Finding-1 downgrade only applies when the profile provably grants
+    *unrestricted* reads (`allowed_read_paths` empty), which is not the
+    case here. This is a direct unit test of `_classify_denial` (rather
+    than a full subprocess run) because actually exercising a real
+    restricted-read Seatbelt profile against a dynamically-linked system
+    binary like `/bin/cat` requires also allowlisting the dynamic linker's
+    own shared-cache paths (which vary by macOS version) just to let the
+    process start at all -- orthogonal to what this specific fix changes.
     """
     executor = SeatbeltSandboxExecutor()
-    with tempfile.TemporaryDirectory() as allowed_dir, tempfile.TemporaryDirectory() as other_dir:
-        outside_file = Path(other_dir) / "outside.txt"
-        outside_file.write_text("outside content")
-        policy = SandboxPolicy(allowed_read_paths=(allowed_dir,))
+    policy = SandboxPolicy(allowed_read_paths=("/some/allowed/dir",))
 
-        result = executor.run_command(["/bin/cat", str(outside_file)], policy=policy)
+    blocked = executor._classify_denial(
+        policy,
+        ["/bin/cat", "/some/outside/dir/file.txt"],
+        1,
+        "",
+        "cat: /some/outside/dir/file.txt: Permission denied\n",
+    )
 
-        assert result.exit_code != 0
-        assert result.policy_blocked is True
+    assert blocked is True
 
 
 # ---------------------------------------------------------------------------
