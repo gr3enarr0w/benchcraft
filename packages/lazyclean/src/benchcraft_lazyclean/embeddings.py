@@ -31,11 +31,12 @@ Two embedding-model sources are provided:
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence, Union
 
 import numpy as np
 import onnx
@@ -54,6 +55,15 @@ __all__ = [
 ]
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+#: A preprocessor may return either a single ``(feature_dim,)`` array fed to
+#: the model's one input (:data:`EmbeddingModel.input_name` -- what the
+#: synthetic single-input fixture and ``hashing_bag_of_words_vectorizer``
+#: use), or a mapping of ONNX input name -> ``(feature_dim,)`` array for a
+#: real multi-input sentence-transformer checkpoint (e.g.
+#: ``{"input_ids": ..., "attention_mask": ..., "token_type_ids": ...}``).
+#: See :meth:`EmbeddingModel.embed`.
+PreprocessorOutput = Union[np.ndarray, Mapping[str, np.ndarray]]
 
 # ---------------------------------------------------------------------------
 # Model licensing allowlist (architecture doc §2.10) -- LazyClean's own
@@ -89,11 +99,24 @@ MODEL_ALLOWLIST.register(
     ),
 )
 
+# A specific, pinned commit of the recommended checkpoint's HF repo -- NOT
+# "main". "main" is a mutable branch ref: the repo owner can force-push a
+# different model (different weights, a different license, or a broken
+# export) to it at any time, silently changing what a previously-verified
+# "Xenova/all-MiniLM-L6-v2" download resolves to. Pinning to an immutable
+# commit SHA means download_recommended_model() always fetches the exact,
+# previously-reviewed artifact this module's Tier-1/Apache-2.0
+# MODEL_ALLOWLIST entry above was actually reviewed against. Re-verify and
+# bump this SHA deliberately (a human decision, not automatic) if the
+# upstream repo needs to be updated.
+_RECOMMENDED_MODEL_REVISION = "751bff37182d3f1213fa05d7196b954e230abad9"
+
 # A direct HTTP source for the recommended checkpoint's ONNX export and its
 # tokenizer config. Referenced only by the optional, lazy download path in
 # download_recommended_model() -- never touched by import or by tests.
 _RECOMMENDED_MODEL_ONNX_URL = (
-    "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx"
+    f"https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/"
+    f"{_RECOMMENDED_MODEL_REVISION}/onnx/model.onnx"
 )
 
 
@@ -237,15 +260,20 @@ class EmbeddingModel:
 
     This is the single canonical way this package turns text into
     embeddings, whether the underlying ``.onnx`` graph is the synthetic
-    test fixture from :func:`build_synthetic_embedding_onnx` or a real
-    production sentence-embedding checkpoint (see README). There is
-    deliberately no second/parallel embedding code path.
+    test fixture from :func:`build_synthetic_embedding_onnx` (single input,
+    single output -- e.g. ``hashing_bag_of_words_vectorizer``) or a real
+    production sentence-embedding checkpoint (see README), which typically
+    has *multiple* named inputs (``input_ids``/``attention_mask``/
+    ``token_type_ids``). There is deliberately no second/parallel embedding
+    code path -- both shapes go through :attr:`preprocessor` and
+    :meth:`embed` below; see :data:`PreprocessorOutput` for how a
+    preprocessor selects between them.
     """
 
     session: ort.InferenceSession
     input_name: str
     output_name: str
-    preprocessor: Callable[[str], np.ndarray]
+    preprocessor: Callable[[str], PreprocessorOutput]
     embedding_dim: int
 
     @classmethod
@@ -253,7 +281,7 @@ class EmbeddingModel:
         cls,
         model_path: str | Path,
         *,
-        preprocessor: Callable[[str], np.ndarray],
+        preprocessor: Callable[[str], PreprocessorOutput],
         embedding_dim: int,
         input_name: str | None = None,
         output_name: str | None = None,
@@ -263,6 +291,21 @@ class EmbeddingModel:
 
         No PyTorch, no `transformers` -- ``onnxruntime.InferenceSession`` is
         the only inference runtime this package ever touches.
+
+        ``input_name`` (like ``session.get_inputs()[0].name`` inferred by
+        default) only matters for a **single-input** graph, i.e. when
+        ``preprocessor`` returns a plain array per row -- see
+        :meth:`embed`. A real multi-input sentence-transformer ONNX
+        checkpoint has more than one required input
+        (``input_ids``/``attention_mask``/``token_type_ids``, typically);
+        for that case, write ``preprocessor`` to return a
+        ``{input_name: array}`` mapping instead, and this inferred/passed
+        ``input_name`` is simply unused (the mapping's own keys are fed to
+        the session directly). This function does not validate that a
+        single inferred input name covers every input the graph actually
+        requires -- if you load a multi-input model with a preprocessor
+        that returns a single array, ``onnxruntime`` will raise a missing-
+        input error at ``embed()`` time, not here.
         """
         session = ort.InferenceSession(
             str(model_path), providers=list(providers) if providers else ["CPUExecutionProvider"]
@@ -278,12 +321,40 @@ class EmbeddingModel:
         )
 
     def embed(self, texts: Iterable[str]) -> np.ndarray:
-        """Embed a batch of text rows, returning a ``(n, embedding_dim)`` float32 array."""
+        """Embed a batch of text rows, returning a ``(n, embedding_dim)`` float32 array.
+
+        ``preprocessor`` may return, per row, either:
+
+        - a plain ``(feature_dim,)`` array -- fed as the single named input
+          ``self.input_name`` (the synthetic fixture / hashing-vectorizer
+          shape), or
+        - a ``{input_name: (feature_dim,) array}`` mapping -- each named
+          input is stacked across the batch and fed to the session under
+          its own name (the real multi-input sentence-transformer shape,
+          e.g. ``input_ids``/``attention_mask``/``token_type_ids``).
+
+        Mixing the two shapes across rows in the same call is not
+        supported; ``preprocessor``'s return type is assumed to be
+        consistent for a given :class:`EmbeddingModel`.
+        """
         rows = list(texts)
         if not rows:
             return np.zeros((0, self.embedding_dim), dtype=np.float32)
-        features = np.stack([self.preprocessor(text) for text in rows]).astype(np.float32)
-        (output,) = self.session.run([self.output_name], {self.input_name: features})
+        raw_features = [self.preprocessor(text) for text in rows]
+        if isinstance(raw_features[0], Mapping):
+            # Multi-input ONNX graph: each preprocessed row is a dict of
+            # named arrays (e.g. input_ids/attention_mask/token_type_ids)
+            # rather than a single array for self.input_name. Stack each
+            # named input across the batch and feed the session all of them
+            # at once, by name -- not just self.input_name.
+            input_names = raw_features[0].keys()
+            feed = {
+                name: np.stack([row[name] for row in raw_features]) for name in input_names  # type: ignore[index]
+            }
+            (output,) = self.session.run([self.output_name], feed)
+        else:
+            features = np.stack(raw_features).astype(np.float32)
+            (output,) = self.session.run([self.output_name], {self.input_name: features})
         return np.asarray(output, dtype=np.float32)
 
 
@@ -336,6 +407,17 @@ def download_recommended_model(
     After downloading, wire the result into :meth:`EmbeddingModel.from_onnx_file`
     together with a real tokenizer (see README) -- this function only
     fetches and caches the ``.onnx`` graph itself.
+
+    The download is written to a temporary file in ``cache_dir`` first and
+    atomically renamed into place only once it completes successfully. If
+    the download is interrupted (network error, process kill, etc.) the
+    temporary file is removed and ``dest`` is left untouched, so a later
+    call never mistakes a truncated/corrupt partial download for a valid
+    cached model just because a file already exists at ``dest``. The
+    fetched URL is pinned to a specific immutable commit of the upstream
+    repo (see ``_RECOMMENDED_MODEL_REVISION``), not a mutable branch ref,
+    so repeated calls (and calls across machines) always fetch the exact
+    same, previously-reviewed artifact.
     """
     MODEL_ALLOWLIST.check(
         RECOMMENDED_MODEL_NAME, accept_restricted_licenses=accept_restricted_licenses
@@ -343,8 +425,18 @@ def download_recommended_model(
     cache_dir_path = Path(cache_dir) if cache_dir is not None else Path.home() / ".cache" / "benchcraft" / "lazyclean"
     cache_dir_path.mkdir(parents=True, exist_ok=True)
     dest = cache_dir_path / "all-MiniLM-L6-v2.onnx"
-    if not dest.exists():
-        import urllib.request
+    if dest.exists():
+        return dest
 
-        urllib.request.urlretrieve(_RECOMMENDED_MODEL_ONNX_URL, dest)  # noqa: S310
+    import urllib.request
+
+    fd, tmp_name = tempfile.mkstemp(dir=cache_dir_path, suffix=".onnx.part")
+    tmp_path = Path(tmp_name)
+    try:
+        os.close(fd)
+        urllib.request.urlretrieve(_RECOMMENDED_MODEL_ONNX_URL, tmp_path)  # noqa: S310
+        tmp_path.replace(dest)  # atomic on the same filesystem
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return dest

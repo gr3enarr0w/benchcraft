@@ -43,25 +43,25 @@ from benchcraft_lazyagent.tasks import (
 )
 
 __all__ = [
-    # adapter.py
+    # Alphabetically sorted (ruff RUF022) across adapter.py/benchmark.py/
+    # tasks.py -- see the import blocks above for which module each name
+    # actually comes from.
     "AgentAction",
     "AgentAdapter",
     "AgentFn",
     "AgentTrajectory",
+    "BenchmarkReport",
+    "FileTaskSpec",
     "SandboxedAgentAdapter",
+    "ScorerFn",
     "TaskResult",
     "TaskSpec",
     "TrajectoryStep",
-    # benchmark.py
-    "BenchmarkReport",
-    "ScorerFn",
-    "run_benchmark",
-    "run_task",
-    # tasks.py
-    "FileTaskSpec",
     "default_task_suite",
     "make_fail_task",
     "make_pass_task",
     "rule_based_agent",
+    "run_benchmark",
+    "run_task",
     "score_file_task",
 ]

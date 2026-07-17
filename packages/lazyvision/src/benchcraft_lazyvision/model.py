@@ -15,9 +15,23 @@ Per CLAUDE.md's MPS-primary constraint: nothing here hardcodes
 ``device="cpu"`` in a way that would prevent later running on MPS --
 :func:`build_model` accepts an arbitrary ``torch.device``/device string and
 the model itself is plain `nn.Module` layers with no CUDA-only or
-CPU-only assumptions. This module's own tests/examples default to CPU
-purely because that is the fastest, most portable choice for automated,
-hermetic verification -- not because MPS is unsupported.
+CPU-only assumptions.
+
+**Device resolution.** :func:`resolve_device` is the one canonical
+device-selection helper in this package (mirroring
+`benchcraft_lazygraph.gcn.resolve_device`'s exact MPS -> CUDA -> CPU
+auto-detect-with-fallback pattern, per CLAUDE.md's "one canonical location
+per capability" rule and its own "MPS is the primary backend" constraint).
+:func:`build_model`, :func:`synthetic_classification_batch`, and
+`benchcraft_lazyvision.pipeline.SimpleImagePipeline` all default their
+``device`` to ``None``, which routes through this same helper -- so a
+caller who does not specify a device gets MPS-first-with-CPU-fallback,
+not a hardcoded CPU default. This module's own *tests* and the *example
+script* still explicitly pin ``device="cpu"`` for hermetic, portable,
+deterministic automated verification -- not because MPS is unsupported,
+but because CPU-for-tests was an intentional prior design choice (see the
+package README's "MPS note") that this change preserves rather than
+overrides.
 """
 
 from __future__ import annotations
@@ -32,7 +46,35 @@ __all__ = [
     "ModelConfig",
     "build_model",
     "synthetic_classification_batch",
+    "resolve_device",
 ]
+
+
+def resolve_device(preferred: str | None = None) -> torch.device:
+    """Pick a compute device, defaulting to MPS with a clean fallback.
+
+    This is the one canonical device-resolution helper in this package --
+    mirrors `benchcraft_lazygraph.gcn.resolve_device` exactly, for
+    consistency across Benchcraft modules. Per CLAUDE.md: MPS is the
+    primary backend for this platform, so this picks MPS if available,
+    else CUDA if available, else CPU -- but always falls back cleanly
+    rather than raising if a caller passes an unavailable ``preferred``
+    device.
+    """
+    if preferred is not None:
+        try:
+            device = torch.device(preferred)
+            # Smoke-test the device is actually usable.
+            torch.zeros(1, device=device)
+            return device
+        except Exception:
+            pass  # fall through to auto-detection
+
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 
 @dataclass(frozen=True)
@@ -109,7 +151,7 @@ def build_model(
     config: ModelConfig | None = None,
     *,
     seed: int = 0,
-    device: str | torch.device = "cpu",
+    device: str | torch.device | None = None,
 ) -> TinyCNN:
     """Construct a :class:`TinyCNN` with deterministic (seeded) init weights.
 
@@ -121,22 +163,24 @@ def build_model(
             (3x32x32 input, 10 classes).
         seed: Seed for ``torch.manual_seed`` so weight init is reproducible
             across test runs.
-        device: Where to place the model. Defaults to ``"cpu"`` for this
-            module's tests/examples (fastest, most portable for automated
-            verification). Per CLAUDE.md, MPS (``torch.device("mps")``) is
-            the platform's intended primary backend -- callers are free to
-            pass that in instead; nothing here assumes CPU.
+        device: Where to place the model. Defaults to ``None``, which
+            resolves via :func:`resolve_device` -- MPS first (this
+            platform's primary backend per CLAUDE.md), then CUDA, then CPU.
+            Callers may pass an explicit device/string (e.g. ``"cpu"``,
+            ``"mps"``) to override; this module's own tests explicitly pass
+            ``device="cpu"`` for hermetic, deterministic verification.
 
     Returns:
         A :class:`TinyCNN` in ``eval()`` mode on ``device``.
     """
+    resolved_device = resolve_device(str(device) if device is not None else None)
     generator_state = torch.get_rng_state()
     try:
         torch.manual_seed(seed)
         model = TinyCNN(config)
     finally:
         torch.set_rng_state(generator_state)
-    return model.to(device).eval()
+    return model.to(resolved_device).eval()
 
 
 def synthetic_classification_batch(
@@ -144,7 +188,7 @@ def synthetic_classification_batch(
     *,
     batch_size: int = 4,
     seed: int = 0,
-    device: str | torch.device = "cpu",
+    device: str | torch.device | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate a small, fully-synthetic (images, labels) batch.
 
@@ -156,22 +200,32 @@ def synthetic_classification_batch(
     a learnable task -- it is purely input/output-shape-compatible stand-in
     data for exercising the pipeline and export path.
 
+    Args:
+        config: Optional :class:`ModelConfig`.
+        batch_size: Number of samples in the batch.
+        seed: Seed for the batch's own CPU generator (kept on CPU
+            regardless of ``device`` -- this only affects reproducibility
+            of the random values, not where the resulting tensors live).
+        device: Where to place the returned tensors. Defaults to ``None``,
+            which resolves via :func:`resolve_device` (MPS -> CUDA -> CPU).
+
     Returns:
         ``(images, labels)`` where ``images`` has shape
         ``(batch_size, in_channels, image_size, image_size)`` and ``labels``
         has shape ``(batch_size,)``.
     """
     cfg = config or ModelConfig()
+    resolved_device = resolve_device(str(device) if device is not None else None)
     generator = torch.Generator(device="cpu").manual_seed(seed)
     images = torch.rand(
         (batch_size, cfg.in_channels, cfg.image_size, cfg.image_size),
         generator=generator,
         dtype=torch.float32,
-    ).to(device)
+    ).to(resolved_device)
     labels = torch.randint(
         low=0,
         high=cfg.num_classes,
         size=(batch_size,),
         generator=generator,
-    ).to(device)
+    ).to(resolved_device)
     return images, labels

@@ -12,8 +12,12 @@ from __future__ import annotations
 import pytest
 from opentelemetry.trace import Span
 
+import hashlib
+
 from lazycore.telemetry import (
     ATTR_GENAI_EVENT_CONTENT,
+    ATTR_GENAI_EVENT_CONTENT_LENGTH,
+    ATTR_GENAI_EVENT_CONTENT_SHA256,
     ATTR_GENAI_EVENT_ROLE,
     ATTR_ML_METRIC_ACCURACY,
     ATTR_ML_METRIC_PREFIX,
@@ -103,5 +107,89 @@ def test_set_ml_metric_does_not_raise():
 def test_add_transcript_event_does_not_raise_and_accepts_extra_attrs():
     """add_transcript_event() does not raise for multiple turns and accepts arbitrary extra keyword attributes (e.g. turn_index) alongside role/content."""
     with genai_span("test.transcript") as span:
-        add_transcript_event(span, role="user", content="hello", turn_index=0)
-        add_transcript_event(span, role="assistant", content="hi there", turn_index=1)
+        add_transcript_event(
+            span, role="user", content="hello", turn_index=0, include_raw_content=True
+        )
+        add_transcript_event(
+            span,
+            role="assistant",
+            content="hi there",
+            turn_index=1,
+            include_raw_content=True,
+        )
+
+
+class _RecordingSpan:
+    """Minimal stand-in for an OTel Span that actually records add_event()
+    calls, used to verify add_transcript_event()'s attribute-shaping logic.
+
+    A real no-op span (the kind genai_span() yields without an SDK
+    configured) accepts add_event() calls but does not expose what was
+    recorded -- it is fine for "does not raise" tests, but cannot verify
+    *what content ends up attached to the span*, which is exactly the
+    safe-by-default contract these regression tests exist to prove. This
+    stub only implements the one method add_transcript_event() actually
+    calls.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def add_event(self, name, attributes=None):  # noqa: ANN001 - test double
+        self.events.append((name, dict(attributes or {})))
+
+
+def test_add_transcript_event_default_does_not_attach_raw_content():
+    """By default (no include_raw_content, no sanitizer), add_transcript_event() does NOT attach the raw content string to the span -- only role, a length, and a SHA-256 hash -- per the safe-by-default security contract."""
+    span = _RecordingSpan()
+    secret_content = "here is my API key: sk-super-secret-12345"
+
+    add_transcript_event(span, role="tool", content=secret_content)
+
+    assert len(span.events) == 1
+    _, attributes = span.events[0]
+    assert ATTR_GENAI_EVENT_CONTENT not in attributes
+    assert secret_content not in str(attributes)
+    assert attributes[ATTR_GENAI_EVENT_ROLE] == "tool"
+    assert attributes[ATTR_GENAI_EVENT_CONTENT_LENGTH] == len(secret_content)
+    assert attributes[ATTR_GENAI_EVENT_CONTENT_SHA256] == hashlib.sha256(
+        secret_content.encode("utf-8")
+    ).hexdigest()
+
+
+def test_add_transcript_event_include_raw_content_opt_in_attaches_verbatim_content():
+    """Passing include_raw_content=True attaches the exact, unmodified content string under ATTR_GENAI_EVENT_CONTENT."""
+    span = _RecordingSpan()
+    content = "the quick brown fox"
+
+    add_transcript_event(span, role="user", content=content, include_raw_content=True)
+
+    _, attributes = span.events[0]
+    assert attributes[ATTR_GENAI_EVENT_CONTENT] == content
+    assert ATTR_GENAI_EVENT_CONTENT_LENGTH not in attributes
+    assert ATTR_GENAI_EVENT_CONTENT_SHA256 not in attributes
+
+
+def test_add_transcript_event_sanitizer_attaches_sanitized_content_not_raw():
+    """Passing a sanitizer callable attaches its return value under ATTR_GENAI_EVENT_CONTENT -- never the original raw content -- even if include_raw_content is also (redundantly) True."""
+    span = _RecordingSpan()
+    raw = "password=hunter2"
+
+    def redact(text: str) -> str:
+        return "[REDACTED]"
+
+    add_transcript_event(
+        span, role="assistant", content=raw, sanitizer=redact, include_raw_content=True
+    )
+
+    _, attributes = span.events[0]
+    assert attributes[ATTR_GENAI_EVENT_CONTENT] == "[REDACTED]"
+    assert raw not in str(attributes)
+
+
+def test_add_transcript_event_extra_attributes_still_pass_through_in_all_modes():
+    """Arbitrary extra keyword attributes (e.g. turn_index) are still attached alongside role and content/metadata, in both the default (metadata-only) and include_raw_content=True modes."""
+    span = _RecordingSpan()
+    add_transcript_event(span, role="user", content="hi", turn_index=3)
+    _, attributes = span.events[0]
+    assert attributes["turn_index"] == 3

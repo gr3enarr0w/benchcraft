@@ -27,6 +27,25 @@ In scope for this pass:
    Adapter-Factory reasoning `benchcraft_lazytune.adapter.BaseTrainingAdapter`
    used for LazyTune -- LazyRed-specific machinery, not shared lazycore
    infrastructure.
+
+   **Deliberately separate from LazyAgent's `AgentAdapter`, not an
+   oversight.** LazyAgent's benchmark-eval module has its own,
+   differently-shaped adapter interface for wrapping a bring-your-own
+   agent under test. `BaseSecurityAdapter` here is shaped around garak's
+   Probe/Generator/Detector attempt-transaction pattern (attack payload
+   in, leak/failure verdict out), which is a genuinely different contract
+   than "run an agent against a benchmark task and score its trajectory."
+   The two modules do share the sandbox *executor* (`lazycore.sandbox`,
+   §2.3) -- that's the actual shared infrastructure the architecture doc
+   calls out -- but per §2.9, formal inter-module data contracts (e.g. a
+   single merged adapter base class both modules implement against) are
+   explicitly deferred until two real modules need to exchange data
+   through one shared shape, not built preemptively because two adapters
+   happen to look superficially similar. If a third module later needs
+   the same "probe in, verdict out" shape, promoting a common base to
+   `lazycore` becomes worth revisiting then; until that's a real,
+   demonstrated need, keeping `BaseSecurityAdapter` module-specific here
+   is the correct call, not a gap to fix.
 2. **`PromptInjectionAdapter`** (`probes.py`) -- the one concrete probe: a
    deliberately naive, deliberately vulnerable local "target" function
    (`naive_vulnerable_target`, a plain Python function standing in for a

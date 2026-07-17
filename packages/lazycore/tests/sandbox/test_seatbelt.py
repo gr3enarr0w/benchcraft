@@ -184,6 +184,50 @@ def test_run_callable_rejects_unpicklable_lambda():
         executor.run_callable(lambda: 1)
 
 
+def test_bare_executable_name_resolves_via_path_and_is_actually_usable():
+    """A bare (no-path) allowed_executables entry like "touch" is resolved via PATH (not against CWD) and the resulting profile actually permits running the real executable -- regression test for the finding that _canonical("python3")-style resolution silently produced a bogus <cwd>/touch path that could never match the real binary."""
+    import shutil
+
+    resolved_touch = shutil.which("touch")
+    assert resolved_touch is not None, "test requires `touch` to be on PATH"
+
+    executor = SeatbeltSandboxExecutor()
+    with tempfile.TemporaryDirectory() as allowed_dir:
+        target_file = str(Path(allowed_dir) / "touched-via-bare-name.txt")
+        policy = SandboxPolicy(
+            allowed_write_paths=(allowed_dir,),
+            allowed_executables=("touch",),
+        )
+
+        # Sanity check: the generated profile actually contains the real,
+        # canonical, resolved-via-PATH executable path, not a CWD-relative
+        # bogus one.
+        profile = build_sbpl_profile(policy)
+        assert str(Path(resolved_touch).resolve()) in profile
+        assert f'(literal "{Path.cwd()}/touch")' not in profile
+
+        result = executor.run_command(["touch", target_file], policy=policy)
+
+        assert result.exit_code == 0, result.stderr
+        assert Path(target_file).exists()
+
+
+def test_bare_unresolvable_executable_name_raises_clear_value_error():
+    """An allowed_executables entry that cannot be resolved via PATH raises ValueError at profile-build time rather than silently emitting a bogus, never-matching CWD-relative path."""
+    policy = SandboxPolicy(
+        allowed_executables=("definitely-not-a-real-executable-xyz123",)
+    )
+    with pytest.raises(ValueError, match="could not be resolved via PATH"):
+        build_sbpl_profile(policy)
+
+
+def test_full_path_executable_entry_is_unaffected_by_bare_name_fix():
+    """An allowed_executables entry that is already a full path (contains a path separator) continues to be resolved via Path.resolve(), exactly as before -- the bare-name PATH-resolution fix only changes behavior for bare names."""
+    policy = SandboxPolicy(allowed_executables=("/usr/bin/touch",))
+    profile = build_sbpl_profile(policy)
+    assert str(Path("/usr/bin/touch").resolve()) in profile
+
+
 def test_get_default_executor_returns_seatbelt_on_this_machine():
     """get_default_executor() returns an available SeatbeltSandboxExecutor on this macOS host."""
     from lazycore.sandbox import get_default_executor

@@ -16,6 +16,8 @@ production base model (`openai-community/gpt2`, registered in
 
 from __future__ import annotations
 
+import tempfile
+
 from benchcraft_lazytune import ProgrammaticAdapter
 
 # A tiny synthetic text corpus -- just enough repeated structure for a few
@@ -58,7 +60,7 @@ def main() -> None:
     direction = "decreased" if delta > 0 else "increased"
     print(f"Loss {direction} by {abs(delta):.4f} over {TRAIN_STEPS} LoRA training steps.")
 
-    save_dir = "/tmp/benchcraft_lazytune_lora_adapter_example"
+    save_dir = tempfile.mkdtemp(prefix="benchcraft_lazytune_lora_adapter_")
     adapter.save_adapter(save_dir)
     print()
     print(f"Saved LoRA adapter weights to: {save_dir}")

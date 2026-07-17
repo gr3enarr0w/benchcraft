@@ -12,6 +12,22 @@ enough to prove the sandboxed benchmark-eval loop end-to-end.
 Reports each run via `lazycore.telemetry`'s OTel GenAI helpers
 (`genai_span`, `set_ml_metric`, `add_transcript_event`) rather than a
 parallel telemetry/reporting schema, per architecture doc §2.6.
+
+**`add_transcript_event` call sites deliberately use the safe-by-default
+metadata-only path** (no ``include_raw_content=True``, no ``sanitizer``).
+This is a conscious choice, not an oversight: per "bring your own agent"
+(see `benchcraft_lazyagent.adapter`), ``agent_fn`` is an arbitrary
+caller-supplied callable, and its proposed command's real stdout/stderr
+(captured in the "tool" trajectory step) can contain whatever that
+command actually printed -- which, for a real agent (not just this
+package's synthetic `rule_based_agent` reference), could include secrets,
+credentials, or other sensitive tool output. Exporting that verbatim into
+an OTel span by default would be exactly the credential/PII-leak risk
+`lazycore.telemetry.add_transcript_event`'s safe-by-default contract
+exists to prevent. A caller who wants full transcript content in their own
+exported traces can wrap/re-emit these spans with ``include_raw_content=True``
+or a ``sanitizer`` at their own telemetry layer; this package does not
+opt in on their behalf.
 """
 
 from __future__ import annotations
@@ -32,7 +48,7 @@ from benchcraft_lazyagent.adapter import (
 )
 from benchcraft_lazyagent.tasks import score_file_task
 
-__all__ = ["ScorerFn", "BenchmarkReport", "run_task", "run_benchmark"]
+__all__ = ["BenchmarkReport", "ScorerFn", "run_benchmark", "run_task"]
 
 #: A scorer inspects the task and its recorded trajectory (which includes
 #: the real `lazycore.sandbox.SandboxResult`) and returns

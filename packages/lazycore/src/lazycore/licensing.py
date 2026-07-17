@@ -207,7 +207,35 @@ class Allowlist:
         license_identifier: str,
         notes: str = "",
     ) -> ModelLicenseEntry:
-        """Add (or replace) an allowlist entry for a model checkpoint."""
+        """Add (or replace) an allowlist entry for a model checkpoint.
+
+        Raises:
+            TypeError: If ``tier`` is not actually a :class:`ModelTier`
+                member (e.g. a raw string like ``"tier_2"``). Python's type
+                annotations are not enforced at runtime, so without this
+                check a caller could pass ``tier="tier_2"``, which would be
+                stored as-is and then silently fail the ``entry.tier is
+                ModelTier.TIER_2`` identity check in :meth:`check` (a plain
+                string is never identical to, or even equal to, the enum
+                member) -- making a restricted checkpoint pass through
+                :meth:`check` as if it were unrestricted, with no error at
+                any point. This is deliberately not silently coerced (e.g.
+                via ``ModelTier(tier)``) -- requiring the actual enum member
+                makes the caller's intent explicit and catches this exact
+                mistake at registration time instead of letting a
+                restricted checkpoint slip through ungated.
+        """
+        if not isinstance(tier, ModelTier):
+            raise TypeError(
+                f"Allowlist.register() requires tier to be a ModelTier "
+                f"member, got {tier!r} ({type(tier).__name__}). Passing a "
+                "raw string (even one that matches a ModelTier value, e.g. "
+                "\"tier_2\") is rejected rather than silently coerced: "
+                "entry.tier is later compared to ModelTier.TIER_2 with `is`, "
+                "so a string value would silently behave as an unrestricted "
+                "entry instead of raising. Pass ModelTier.TIER_1 or "
+                "ModelTier.TIER_2 explicitly."
+            )
         entry = ModelLicenseEntry(
             name=name, tier=tier, license_identifier=license_identifier, notes=notes
         )

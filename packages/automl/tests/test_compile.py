@@ -22,7 +22,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 import benchcraft_automl
-from benchcraft_automl import CompileOptions, ONNXExtraNotInstalledError, compile
+from benchcraft_automl import CompileOptions, compile
 
 onnxruntime = pytest.importorskip(
     "onnxruntime", reason="onnxruntime not installed; skipping onnx-dependent tests"
@@ -170,6 +170,23 @@ def test_compile_raises_typeerror_for_non_numeric_dataframe_column():
     message = str(exc_info.value)
     assert "float32" in message
     assert "f" in message
+
+
+def test_compile_rejects_sample_input_with_wrong_feature_count():
+    """`compile()` raises a clear `ValueError` (not a confusing downstream
+    skl2onnx/ONNX error) when `sample_input`'s column count doesn't match
+    `pipeline.n_features_in_`, whether the sample has too many or too few
+    columns."""
+    pipeline, _, X_test = _fit_scaler_logreg_pipeline()
+    assert pipeline.n_features_in_ == X_test.shape[1]
+
+    too_many = np.zeros((X_test.shape[0], X_test.shape[1] + 1), dtype=np.float32)
+    with pytest.raises(ValueError, match="feature"):
+        compile(pipeline, too_many)
+
+    too_few = np.zeros((X_test.shape[0], X_test.shape[1] - 1), dtype=np.float32)
+    with pytest.raises(ValueError, match="feature"):
+        compile(pipeline, too_few)
 
 
 def test_compile_on_breast_cancer_dataset_end_to_end():

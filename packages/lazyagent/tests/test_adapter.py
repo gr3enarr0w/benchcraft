@@ -1,20 +1,30 @@
 """Tests for benchcraft_lazyagent.adapter -- the AgentAdapter/SandboxedAgentAdapter pattern.
 
-These tests exercise the real macOS Seatbelt backend
+These tests exercise the real sandbox backend
 (`lazycore.sandbox.get_default_executor()`) rather than mocking the
-sandbox -- this machine is macOS, so `SeatbeltSandboxExecutor` is expected
-to actually be available (see README "Sandbox wiring").
+sandbox (see README "Sandbox wiring"). Every test in this module genuinely
+needs a real, available sandbox backend to run an agent action, so the
+``executor`` fixture below -- not a module-wide OS check -- is what decides
+whether to skip: it skips gracefully (`pytest.skip`) if
+`lazycore.sandbox.SandboxBackendUnavailableError` is raised or the resolved
+executor reports itself unavailable, rather than gating on
+``platform.system()``. That keeps the skip reason tied to actual backend
+capability instead of host OS, and doesn't accidentally skip any
+non-sandbox-dependent test that might be added to this module later.
 """
 
 from __future__ import annotations
 
-import platform
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from lazycore.sandbox import BaseSandboxExecutor, get_default_executor
+from lazycore.sandbox import (
+    BaseSandboxExecutor,
+    SandboxBackendUnavailableError,
+    get_default_executor,
+)
 from benchcraft_lazyagent.adapter import (
     AgentAction,
     AgentTrajectory,
@@ -23,17 +33,24 @@ from benchcraft_lazyagent.adapter import (
 )
 from benchcraft_lazyagent.tasks import make_pass_task, rule_based_agent
 
-pytestmark = pytest.mark.skipif(
-    platform.system() != "Darwin",
-    reason="SeatbeltSandboxExecutor is macOS-only; this suite exercises the real backend, not a mock",
-)
-
 
 @pytest.fixture()
 def executor() -> BaseSandboxExecutor:
-    """The real default (Seatbelt) sandbox executor, asserted available."""
-    ex = get_default_executor()
-    assert ex.is_available(), "expected the real Seatbelt backend to be available on macOS"
+    """The real sandbox executor for this host, or skip if unavailable.
+
+    Resolves via `lazycore.sandbox.get_default_executor()` and skips this
+    test (rather than failing, and rather than gating the whole module on
+    ``platform.system()``) if no real backend is usable here --
+    `SandboxBackendUnavailableError` (e.g. non-macOS/non-Linux host, or
+    macOS without ``sandbox-exec``) or an executor that resolves but
+    reports ``is_available() is False``.
+    """
+    try:
+        ex = get_default_executor()
+    except SandboxBackendUnavailableError as exc:
+        pytest.skip(f"no real sandbox backend available on this host: {exc}")
+    if not ex.is_available():
+        pytest.skip("resolved sandbox backend reports itself unavailable on this host")
     return ex
 
 

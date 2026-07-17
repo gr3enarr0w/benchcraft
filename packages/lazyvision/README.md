@@ -129,21 +129,31 @@ passing).
 ## MPS note
 
 Per CLAUDE.md, **MPS (`torch.device("mps")`) is this platform's primary
-backend**, not CUDA. Nothing in this package hardcodes `device="cpu"` in a
-way that would prevent later running on MPS: `build_model`,
-`synthetic_classification_batch`, and `TinyCNN` itself all accept an
-arbitrary device and contain no CUDA-only or CPU-only assumptions.
+backend**, not CUDA. `resolve_device()` is this package's one canonical
+device-selection helper — it mirrors
+`benchcraft_lazygraph.gcn.resolve_device`'s exact pattern (MPS available? ->
+use it; else CUDA available? -> use it; else CPU; an explicit but
+unavailable/invalid `preferred` device falls back to auto-detection rather
+than raising). `build_model`, `synthetic_classification_batch`, and
+`PipelineConfig`/`SimpleImagePipeline` all default their `device` argument
+to `None`, which routes through `resolve_device()` — so a caller who does
+not specify a device gets **MPS-first-with-CPU-fallback**, not an implicit
+CPU default. `TinyCNN` itself accepts an arbitrary device and contains no
+CUDA-only or CPU-only assumptions.
 
-This package's own **tests and example script default to CPU**, purely
-because CPU is the fastest, most portable choice for automated, hermetic
+This package's own **tests and the example script explicitly pin
+`device="cpu"`** (the example resolves a device once via `resolve_device()`
+and then propagates it consistently everywhere, so it exercises whatever
+this package considers the canonical default — MPS on Apple Silicon, CPU
+elsewhere). Tests instead pin `device="cpu"` explicitly, purely because CPU
+is the fastest, most portable choice for automated, hermetic, deterministic
 verification (no GPU required in CI, no MPS-availability check needed) —
-not because MPS is unsupported. A user targeting Apple Silicon can pass
-`device="mps"` to `build_model`/`synthetic_classification_batch` today;
-`export_to_onnx`/`verify_export` operate on whatever device the model and
-example input already live on. This package does not yet include the
-architecture doc's called-out v1 work item of auditing MPS kernel-support
-maturity for attention/NMS layers, since neither is in scope for a plain
-CNN classifier.
+not because MPS is unsupported. `export_to_onnx`/`verify_export` operate on
+whatever device the model and example input already live on (internally
+converting to CPU/numpy only where `onnxruntime`'s `CPUExecutionProvider`
+requires it). This package does not yet include the architecture doc's
+called-out v1 work item of auditing MPS kernel-support maturity for
+attention/NMS layers, since neither is in scope for a plain CNN classifier.
 
 ## Deferred (explicitly out of scope for this pass)
 

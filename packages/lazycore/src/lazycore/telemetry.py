@@ -21,8 +21,9 @@ free.
 from __future__ import annotations
 
 import enum
+import hashlib
 from contextlib import contextmanager
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from opentelemetry import trace
 from opentelemetry.trace import Span, Tracer
@@ -34,6 +35,8 @@ __all__ = [
     "ATTR_ML_METRIC_ACCURACY",
     "ATTR_GENAI_EVENT_ROLE",
     "ATTR_GENAI_EVENT_CONTENT",
+    "ATTR_GENAI_EVENT_CONTENT_LENGTH",
+    "ATTR_GENAI_EVENT_CONTENT_SHA256",
     "SecuritySeverity",
     "ml_metric_attribute",
     "get_tracer",
@@ -69,6 +72,14 @@ ATTR_ML_METRIC_ACCURACY = f"{ATTR_ML_METRIC_PREFIX}accuracy"
 #: trajectories, red-team conversations).
 ATTR_GENAI_EVENT_ROLE = "gen_ai.event.role"
 ATTR_GENAI_EVENT_CONTENT = "gen_ai.event.content"
+
+#: Metadata-only attribute keys used by :func:`add_transcript_event`'s
+#: safe-by-default path (no raw content attached): the content's length and
+#: a SHA-256 hash, so a caller/operator can still correlate/deduplicate
+#: transcript turns across an exported trace without the raw text (prompts,
+#: tool output, credentials, PII, etc.) ever leaving the process.
+ATTR_GENAI_EVENT_CONTENT_LENGTH = "gen_ai.event.content.length"
+ATTR_GENAI_EVENT_CONTENT_SHA256 = "gen_ai.event.content.sha256"
 
 
 class SecuritySeverity(str, enum.Enum):
@@ -173,6 +184,9 @@ def add_transcript_event(
     span: Span,
     role: str,
     content: str,
+    *,
+    include_raw_content: bool = False,
+    sanitizer: Callable[[str], str] | None = None,
     **extra_attributes: Any,
 ) -> None:
     """Record one turn of a conversational transcript as a span event.
@@ -180,11 +194,59 @@ def add_transcript_event(
     Used for agent trajectories (LazyAgent) and red-team conversations
     (LazyRed) so both modules represent multi-turn transcripts the same
     way: one span event per turn, tagged with the speaker ``role`` (e.g.
-    ``"user"``, ``"assistant"``, ``"tool"``) and its ``content``.
+    ``"user"``, ``"assistant"``, ``"tool"``) and its content.
+
+    **Security rationale / safe-by-default contract.** ``content`` here is
+    exactly the kind of data a red-team run (LazyRed) or agent benchmark
+    (LazyAgent) is *expected* to surface: arbitrary model prompts, tool
+    output, and adversarial payloads, which can and do contain credentials,
+    secrets, or PII discovered mid-run. An OTel span is exportable
+    telemetry -- once an SDK/exporter is configured by the application, its
+    attributes/events can leave the process (to a collector, a file, a
+    dashboard). Recording ``content`` verbatim into an exportable span by
+    default would silently turn every red-team/agent run's telemetry
+    pipeline into a potential credential/PII leak, with no signal to the
+    caller that this is happening. This function therefore does **not**
+    attach raw ``content`` to the span unless the caller explicitly opts
+    in, via one of:
+
+    - ``sanitizer``: a callable applied to ``content`` before it is
+      attached (e.g. a redaction function that masks anything
+      credential/PII-shaped). Its return value -- not the original
+      ``content`` -- is what gets attached under
+      :data:`ATTR_GENAI_EVENT_CONTENT`. Takes precedence over
+      ``include_raw_content`` if both are given.
+    - ``include_raw_content=True``: attach ``content`` completely
+      unmodified. Only appropriate when the caller has independently
+      verified it's safe to export as-is (e.g. a controlled test fixture,
+      or a pipeline stage the caller has already sanitized upstream).
+
+    When neither is given (the default), no raw or sanitized text is
+    attached at all -- only metadata that still lets an operator correlate
+    transcript turns across an exported trace without ever exporting the
+    text itself: :data:`ATTR_GENAI_EVENT_CONTENT_LENGTH` (``len(content)``)
+    and :data:`ATTR_GENAI_EVENT_CONTENT_SHA256` (a SHA-256 hex digest of
+    ``content``, encoded as UTF-8).
+
+    This is a behavior change from an earlier version of this function,
+    which always attached ``content`` verbatim. Every caller in *this*
+    package's own tests has been updated to pass ``include_raw_content=True``
+    where a test genuinely needs to assert on the recorded content; callers
+    in other Benchcraft packages (LazyRed, LazyAgent) must make the same
+    explicit choice deliberately once they adopt this signature -- this
+    function does not, and should not, guess on their behalf.
     """
-    attributes: dict[str, Any] = {
-        ATTR_GENAI_EVENT_ROLE: role,
-        ATTR_GENAI_EVENT_CONTENT: content,
-    }
+    attributes: dict[str, Any] = {ATTR_GENAI_EVENT_ROLE: role}
+
+    if sanitizer is not None:
+        attributes[ATTR_GENAI_EVENT_CONTENT] = sanitizer(content)
+    elif include_raw_content:
+        attributes[ATTR_GENAI_EVENT_CONTENT] = content
+    else:
+        attributes[ATTR_GENAI_EVENT_CONTENT_LENGTH] = len(content)
+        attributes[ATTR_GENAI_EVENT_CONTENT_SHA256] = hashlib.sha256(
+            content.encode("utf-8", errors="replace")
+        ).hexdigest()
+
     attributes.update(extra_attributes)
     span.add_event(name="gen_ai.content", attributes=attributes)

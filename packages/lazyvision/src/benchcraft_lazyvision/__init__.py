@@ -28,6 +28,7 @@ this codebase):
     ...     export_to_onnx,
     ...     verify_export,
     ...     ExportResult,
+    ...     resolve_device,
     ... )
 """
 
@@ -36,6 +37,7 @@ from benchcraft_lazyvision.model import (
     ModelConfig,
     TinyCNN,
     build_model,
+    resolve_device,
     synthetic_classification_batch,
 )
 from benchcraft_lazyvision.pipeline import PipelineConfig, SimpleImagePipeline
@@ -50,6 +52,7 @@ __all__ = [
     "export_to_onnx",
     "verify_export",
     "ExportResult",
+    "resolve_device",
 ]
 
 __version__ = "0.1.0"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from lazycore.licensing import (
@@ -59,7 +61,7 @@ def test_non_commercial_weights_mitigation_references_opt_in_flag():
 def test_mitigation_dataclass_is_immutable():
     """Mitigation is a frozen dataclass; assigning to a field after construction raises."""
     mitigation = RISK_MITIGATIONS[RiskType.GPL_BUILD_TIME_LINK]
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         mitigation.required_mitigation = "changed"  # type: ignore[misc]
 
 
@@ -151,3 +153,34 @@ def test_get_returns_none_for_missing_entry_without_raising():
     """get() returns None (not a raised exception) for a name that was never registered, unlike check()."""
     allowlist = Allowlist()
     assert allowlist.get("missing") is None
+
+
+def test_register_rejects_raw_string_tier_instead_of_silently_registering_unrestricted():
+    """register() raises TypeError when tier is a raw string (e.g. "tier_2") instead of an actual ModelTier member.
+
+    Regression test for the finding that Python does not enforce the
+    ModelTier type annotation at runtime: passing tier="tier_2" would
+    previously be stored as-is, and then entry.tier is ModelTier.TIER_2 in
+    check() would be False for a plain string (identity comparison never
+    matches across types), silently treating a restricted entry as
+    unrestricted with no error anywhere in the flow.
+    """
+    allowlist = Allowlist()
+
+    with pytest.raises(TypeError):
+        allowlist.register("sneaky-model", "tier_2", "CC-BY-NC-4.0")  # type: ignore[arg-type]
+
+    # The bad call must not have partially registered anything either.
+    assert "sneaky-model" not in allowlist
+
+
+def test_register_still_works_with_the_correct_enum_member():
+    """register() succeeds, and the entry is correctly gated, when tier is passed as the actual ModelTier.TIER_2 enum member (not a string)."""
+    allowlist = Allowlist()
+    allowlist.register("real-restricted-model", ModelTier.TIER_2, "CC-BY-NC-4.0")
+
+    with pytest.raises(RestrictedLicenseNotAcceptedError):
+        allowlist.check("real-restricted-model")
+
+    entry = allowlist.check("real-restricted-model", accept_restricted_licenses=True)
+    assert entry.tier is ModelTier.TIER_2

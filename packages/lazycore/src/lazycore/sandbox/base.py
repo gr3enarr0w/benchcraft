@@ -28,9 +28,10 @@ from __future__ import annotations
 
 import abc
 import dataclasses
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 
 __all__ = [
@@ -135,7 +136,18 @@ class SandboxPolicy:
             bare (non-absolute) names are accepted here by design.
         env: Extra environment variables to set for the sandboxed process,
             on top of (or instead of, depending on ``inherit_env``) the
-            calling process's environment.
+            calling process's environment. Coerced to an immutable
+            ``types.MappingProxyType`` snapshot in ``__post_init__``: since
+            this dataclass is ``frozen=True``, a plain ``dict`` here would
+            otherwise still be mutable in place (``policy.env["X"] = "y"``
+            does not touch the frozen *field*, only the dict object it
+            points at), silently changing the effective sandbox environment
+            without ever replacing the policy. The snapshot is taken from a
+            *copy* of whatever mapping was passed in, so later mutating the
+            original object the caller passed also has no effect. Pass a
+            plain ``dict`` (or any ``Mapping``) at construction time; read
+            access (``policy.env["X"]``, iteration, ``len()``, etc.) works
+            exactly like a read-only ``dict``.
         inherit_env: Whether the sandboxed process inherits the calling
             process's full environment (with ``env`` applied as overrides)
             or starts from an empty environment plus only ``env``.
@@ -153,7 +165,7 @@ class SandboxPolicy:
     allowed_read_paths: tuple[str, ...] = field(default_factory=tuple)
     allowed_write_paths: tuple[str, ...] = field(default_factory=tuple)
     allowed_executables: tuple[str, ...] = field(default_factory=tuple)
-    env: dict[str, str] = field(default_factory=dict)
+    env: Mapping[str, str] = field(default_factory=dict)
     inherit_env: bool = False
     timeout_seconds: float | None = None
     working_directory: str | None = None
@@ -167,7 +179,16 @@ class SandboxPolicy:
         from run time to construction time instead of eliminating it, and
         would silently paper over what is almost always a caller bug. This
         raises instead.
+
+        Also coerces ``env`` into an immutable ``types.MappingProxyType``
+        snapshot of a *copy* of whatever was passed in (see the ``env``
+        field's docstring above for why this is needed even though the
+        dataclass itself is frozen). ``object.__setattr__`` is required
+        here, same as everywhere else in this method, because normal
+        attribute assignment is disabled by ``frozen=True``.
         """
+        object.__setattr__(self, "env", types.MappingProxyType(dict(self.env)))
+
         for field_name in ("allowed_read_paths", "allowed_write_paths"):
             for entry in getattr(self, field_name):
                 if not Path(entry).is_absolute():

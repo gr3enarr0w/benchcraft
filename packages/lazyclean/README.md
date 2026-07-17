@@ -27,6 +27,38 @@ architecture doc, not silently dropped):
 - The **train/test contamination auditor**.
 - The aggregate **"Dataset Integrity Score"**.
 
+## Zero-vector rows: "not comparable", not a silent duplicate or distinct call
+
+`hashing_bag_of_words_vectorizer` tokenizes with a simple `[a-z0-9]+` regex.
+Any text with **zero regex-matching tokens** -- not just genuinely empty or
+whitespace-only strings, but also punctuation-only text (`"!!!"`, `"???"`)
+and non-ASCII text the regex can't match (`"日本語"`) -- embeds to the
+identical all-zero vector. A zero embedding means *the vectorizer extracted
+no features*, not that the source rows are equal, and not that they're
+distinct either -- a hashing bag-of-words vectorizer with zero extracted
+features genuinely has no basis to compare two such rows.
+
+`cosine_similarity_matrix` and `find_near_duplicates` treat this honestly:
+every pairwise entry involving at least one zero-vector row (including a
+zero-vector row against itself, and against a genuinely non-zero row) is
+`nan` -- undefined, not silently `0.0` and not silently `1.0` -- and
+`find_near_duplicates` never flags such a pair as a duplicate by score.
+Instead, `DedupReport.zero_vector_row_indices` lists every row that
+produced no extractable features and could not be compared at all, as a
+third category distinct from both "confirmed duplicate" and "confirmed
+distinct" rows in `report.pairs`/`report.flagged_indices()`.
+
+This is itself the fix for two earlier bugs that got this wrong in
+opposite directions: originally, two genuinely-empty rows read similarity
+`0.0` against each other and were silently missed as duplicates; a
+follow-up fix over-corrected by making *any* two zero-vector rows read
+`1.0`, which falsely flagged unrelated zero-feature rows (e.g. `"!!!"` and
+`"???"`) as duplicates of each other at every valid threshold. Neither
+silent guess is right -- reporting "not comparable" separately is the
+honest answer given what this vectorizer can actually tell you. Genuinely
+identical non-empty text is unaffected by any of this and is still
+correctly flagged as a duplicate via its (non-zero) embedding vector.
+
 ## The naive O(n²) caveat
 
 `dedup.py`'s `find_near_duplicates` computes the **full pairwise
@@ -152,6 +184,11 @@ embeddings, report = detect_near_duplicate_text(
 )
 for pair in report.pairs:
     print(pair.index_a, pair.index_b, pair.similarity)
+
+# Rows that produced no extractable features (e.g. empty/punctuation-only/
+# non-ASCII text under the hashing vectorizer) are reported separately --
+# see "Zero-vector rows" above -- rather than silently folded into `pairs`.
+print("could not compare:", report.zero_vector_row_indices)
 ```
 
 `detect_near_duplicate_text` accepts a plain `Iterable[str]`, or a Tier-1

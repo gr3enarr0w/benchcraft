@@ -30,6 +30,7 @@ swap in a real framework's decision function without changing
 from __future__ import annotations
 
 import shlex
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,11 +40,11 @@ from benchcraft_lazyagent.adapter import AgentAction, AgentTrajectory, TaskSpec
 
 __all__ = [
     "FileTaskSpec",
+    "default_task_suite",
+    "make_fail_task",
+    "make_pass_task",
     "rule_based_agent",
     "score_file_task",
-    "make_pass_task",
-    "make_fail_task",
-    "default_task_suite",
 ]
 
 
@@ -124,15 +125,43 @@ def score_file_task(task: TaskSpec, trajectory: AgentTrajectory) -> tuple[bool, 
     return True, f"file {task.target_path!r} created with expected content"
 
 
+def _fresh_task_root(base_dir: Path, name: str) -> Path:
+    """Allocate a genuinely fresh, unique task-scoped directory under ``base_dir``.
+
+    Regression fix (CodeRabbit): the previous implementation derived the
+    task root deterministically as ``base_dir / name``. Re-invoking a
+    factory (:func:`make_pass_task`/:func:`make_fail_task`) with the same
+    ``base_dir``/``name`` pair -- e.g. re-running a benchmark suite against
+    a persistent workspace directory instead of a brand-new
+    `tempfile.TemporaryDirectory` each time -- would silently reuse
+    whatever directory (and any stale files inside it) a prior run left
+    behind. Since :func:`score_file_task` scores by trusting real
+    filesystem state, a stale target file from a previous run could make a
+    task falsely "pass" without this run's agent ever having created it,
+    and could also mask a real containment regression in the fail-designed
+    task (a stale ``forbidden/`` directory from an old, unpatched sandbox
+    run could linger even after containment is fixed).
+
+    ``tempfile.mkdtemp`` guarantees a new, unique directory on every call
+    (even for repeated ``base_dir``/``name`` pairs), so each task instance
+    always starts from a genuinely empty workspace.
+    """
+    base_dir = Path(base_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=f"{name}-", dir=str(base_dir)))
+
+
 def make_pass_task(base_dir: Path, *, name: str = "create_file_pass") -> FileTaskSpec:
     """A task the sandbox should allow: write inside ``allowed_write_paths``.
 
     Args:
         base_dir: A directory this task family creates its own
             task-scoped subdirectory under (the caller typically passes a
-            fresh `tempfile.TemporaryDirectory` path).
+            fresh `tempfile.TemporaryDirectory` path). Each call gets a
+            fresh, unique subdirectory (see :func:`_fresh_task_root`) even
+            if ``base_dir``/``name`` are reused across calls.
     """
-    task_root = Path(base_dir) / name
+    task_root = _fresh_task_root(base_dir, name)
     workspace = task_root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
 
@@ -169,9 +198,12 @@ def make_fail_task(base_dir: Path, *, name: str = "create_file_escape_fail") -> 
     included in ``allowed_write_paths``. The shared sandbox executor's
     default-deny write policy should block the write, the file should
     never be created, and :func:`score_file_task` should therefore score
-    this task as a failure.
+    this task as a failure. Like :func:`make_pass_task`, each call gets a
+    fresh, unique task root (see :func:`_fresh_task_root`) so a stale
+    ``forbidden/`` directory from a previous run can never linger into
+    this run's containment check.
     """
-    task_root = Path(base_dir) / name
+    task_root = _fresh_task_root(base_dir, name)
     workspace = task_root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     forbidden_dir = task_root / "forbidden"  # deliberately NOT in allowed_write_paths

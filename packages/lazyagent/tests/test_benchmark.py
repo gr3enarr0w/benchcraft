@@ -3,37 +3,59 @@
 from __future__ import annotations
 
 import math
-import platform
 from pathlib import Path
 
 import pytest
 
+from lazycore.sandbox import (
+    BaseSandboxExecutor,
+    SandboxBackendUnavailableError,
+    get_default_executor,
+)
 from benchcraft_lazyagent.adapter import AgentAction, TaskSpec
 from benchcraft_lazyagent.benchmark import BenchmarkReport, run_benchmark
 from benchcraft_lazyagent.tasks import default_task_suite, make_pass_task, rule_based_agent
 
-pytestmark = pytest.mark.skipif(
-    platform.system() != "Darwin",
-    reason="SeatbeltSandboxExecutor is macOS-only; this suite exercises the real backend, not a mock",
-)
+
+@pytest.fixture()
+def executor() -> BaseSandboxExecutor:
+    """The real sandbox executor for this host, or skip if unavailable.
+
+    Only the tests that actually run a task through `run_benchmark` need a
+    real backend. `test_run_benchmark_rejects_empty_task_list` below
+    returns before executor selection ever happens (see
+    `benchmark.run_benchmark`'s empty-task-list guard), so it doesn't take
+    this fixture and runs unconditionally on every platform -- it was
+    previously, incorrectly, skipped on non-Darwin CI by this module's old
+    OS-wide `pytestmark`.
+    """
+    try:
+        ex = get_default_executor()
+    except SandboxBackendUnavailableError as exc:
+        pytest.skip(f"no real sandbox backend available on this host: {exc}")
+    if not ex.is_available():
+        pytest.skip("resolved sandbox backend reports itself unavailable on this host")
+    return ex
 
 
 def test_run_benchmark_rejects_empty_task_list():
     """`run_benchmark` raises ValueError instead of dividing by zero when
     given an empty task suite (pass_rate/mean_latency would otherwise
-    divide by len(results) == 0)."""
+    divide by len(results) == 0). This never touches the sandbox executor
+    (the empty-list check happens before executor selection), so it runs
+    on any platform regardless of sandbox backend availability."""
     with pytest.raises(ValueError):
         run_benchmark([], rule_based_agent)
 
 
-def test_run_benchmark_aggregates_pass_rate_and_mean_latency(tmp_path: Path):
+def test_run_benchmark_aggregates_pass_rate_and_mean_latency(executor, tmp_path: Path):
     """The default two-task suite (one designed to pass, one to fail)
     yields a 50% pass rate, correctly attributes which named task passed
     vs. failed, and reports real, finite, positive latencies for every
     task and for the aggregate mean."""
     suite = default_task_suite(tmp_path)  # one pass-designed, one fail-designed
 
-    report = run_benchmark(suite, rule_based_agent)
+    report = run_benchmark(suite, rule_based_agent, executor=executor)
 
     assert isinstance(report, BenchmarkReport)
     assert report.task_count == 2
@@ -58,7 +80,7 @@ def test_run_benchmark_aggregates_pass_rate_and_mean_latency(tmp_path: Path):
         assert result.latency_seconds > 0.0
 
 
-def test_run_benchmark_with_only_passing_tasks_reports_perfect_pass_rate(tmp_path: Path):
+def test_run_benchmark_with_only_passing_tasks_reports_perfect_pass_rate(executor, tmp_path: Path):
     """A suite made entirely of pass-designed tasks reports a 100% pass
     rate and every individual result marked successful."""
     from benchcraft_lazyagent.tasks import make_pass_task
@@ -68,13 +90,13 @@ def test_run_benchmark_with_only_passing_tasks_reports_perfect_pass_rate(tmp_pat
         make_pass_task(tmp_path, name="pass_b"),
     ]
 
-    report = run_benchmark(tasks, rule_based_agent)
+    report = run_benchmark(tasks, rule_based_agent, executor=executor)
 
     assert report.pass_rate == pytest.approx(1.0)
     assert all(r.success for r in report.results)
 
 
-def test_run_benchmark_isolates_a_task_whose_agent_fn_raises(tmp_path: Path):
+def test_run_benchmark_isolates_a_task_whose_agent_fn_raises(executor, tmp_path: Path):
     """Regression test for the per-task exception boundary.
 
     A 3-task suite where the *middle* task's ``agent_fn`` deliberately
@@ -99,7 +121,7 @@ def test_run_benchmark_isolates_a_task_whose_agent_fn_raises(tmp_path: Path):
         return rule_based_agent(task)
 
     report = run_benchmark(
-        [task_a, task_b, task_c], agent_fn_that_raises_for_one_task
+        [task_a, task_b, task_c], agent_fn_that_raises_for_one_task, executor=executor
     )
 
     # The run completed for the whole suite -- no exception propagated, and

@@ -121,7 +121,9 @@ def test_real_digit_runs_through_the_full_pipeline() -> None:
     with no shortcut around `decode()`."""
     png_bytes, _label = _load_real_digit_png_bytes(index=0)
 
-    config = PipelineConfig(image_size=IMAGE_SIZE, horizontal_flip_prob=0.0, seed=0)
+    config = PipelineConfig(
+        image_size=IMAGE_SIZE, horizontal_flip_prob=0.0, seed=0, device="cpu"
+    )
     pipeline = SimpleImagePipeline(config)
 
     dense_tensor = pipeline.run(png_bytes)  # decode() really parses the PNG bytes above.
@@ -147,7 +149,7 @@ def test_real_digit_export_matches_pytorch_output(digit_index: int) -> None:
     png_bytes, label = _load_real_digit_png_bytes(index=digit_index)
 
     pipeline_config = PipelineConfig(
-        image_size=IMAGE_SIZE, horizontal_flip_prob=0.0, seed=digit_index
+        image_size=IMAGE_SIZE, horizontal_flip_prob=0.0, seed=digit_index, device="cpu"
     )
     pipeline = SimpleImagePipeline(pipeline_config)
     dense_tensor = pipeline.run(png_bytes)

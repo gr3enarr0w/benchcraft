@@ -133,11 +133,13 @@ pip install -e packages/lazycore
 pip install -e "packages/lazyagent[dev]"
 ```
 
-`lazycore` is a local sibling package and is not listed as a formal path
-dependency in `pyproject.toml` (hatchling/pip have no portable, idiomatic
-way to express a relative-path dependency in `pyproject.toml` metadata) --
+`lazycore` is declared as a bare (unpinned) dependency in `pyproject.toml`,
 matching the convention already established by `packages/lazytune`,
-`packages/automl`, and `packages/lazyred`. Install it first.
+`packages/automl`, and `packages/lazyforecast`. It is a local sibling
+package, not published to PyPI, so it still must be installed (or
+otherwise made resolvable) first -- a plain `pip install -e
+"packages/lazyagent[dev]"` without `lazycore` already installed/resolvable
+will fail to resolve the dependency.
 
 This package's own dependency surface is **stdlib + lazycore only** -- no
 smolagents/langgraph/autogen/camel, per the "explicitly deferred" table

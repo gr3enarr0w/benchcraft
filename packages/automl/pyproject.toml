@@ -22,16 +22,23 @@ classifiers = [
 # scaffold implements the ONNX export path only, so it is the sole optional
 # extra declared here.
 #
-# lazycore is a local sibling package (packages/lazycore) and is not listed
-# here as a formal path dependency -- hatchling/pip do not have a portable,
-# idiomatic way to express a relative-path dependency in pyproject.toml
-# metadata (unlike e.g. Poetry's `path = "../lazycore"` extra). Per README,
-# install it first: `pip install -e packages/lazycore` before installing
-# this package.
+# lazycore is a local sibling package (packages/lazycore), not a package
+# published to PyPI, so it is listed here by bare name only (no version
+# pin -- pinning a version for a package that isn't on any index would be
+# misleading). hatchling/pip do not have a portable, idiomatic way to
+# express a relative-path dependency in pyproject.toml metadata (unlike
+# e.g. Poetry's `path = "../lazycore"` extra), so this does not make a
+# plain `pip install packages/automl` work in isolation -- it must still
+# be installed first: `pip install -e packages/lazycore` before installing
+# this package (see README). Declaring it here means a resolver run
+# without lazycore already installed fails fast with a clear "could not
+# find lazycore" error instead of succeeding and then failing at import
+# time inside `lazycore.data`.
 dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
     "scikit-learn>=1.3",
+    "lazycore",
 ]
 
 [project.optional-dependencies]

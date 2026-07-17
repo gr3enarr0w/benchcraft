@@ -54,14 +54,28 @@ def test_cosine_similarity_matrix_shape_and_diagonal():
     assert sims[0, 1] == pytest.approx(0.0, abs=1e-6)  # orthogonal vectors
 
 
-def test_cosine_similarity_matrix_zero_vectors_are_self_similar_and_mutually_duplicate():
-    """Regression test: an all-zero embedding row (e.g. empty/whitespace/
-    punctuation-only text through hashing_bag_of_words_vectorizer) used to
-    compute cosine similarity 0.0 against itself and against an identical
-    zero row, because the old implementation clamped zero norms to 1.0
-    before normalizing, leaving the zero vector as the zero vector. Two
-    zero vectors are identical rows and must read as duplicates (1.0); a
-    zero vector against a genuinely non-zero vector must NOT look similar.
+def test_cosine_similarity_matrix_zero_vectors_are_undefined_not_zero_or_one():
+    """A zero embedding means the vectorizer extracted no features, not that
+    the source rows are equal or distinct.
+
+    Two earlier bugs bracket the correct behavior here:
+
+    - Originally, a zero-vector row's cosine similarity to itself or to
+      another zero vector always read 0.0 (the old implementation clamped
+      zero norms to 1.0 before normalizing, leaving the zero vector as the
+      zero vector) -- silently missing genuinely-identical zero-feature
+      rows (e.g. two empty strings) as duplicates.
+    - A subsequent fix over-corrected by making ANY two zero-vector rows
+      read similarity 1.0 -- silently flagging unrelated zero-feature rows
+      (e.g. "!!!" and "???", which share no tokens at all) as duplicates of
+      each other at every valid threshold.
+
+    Neither silent guess is right: a hashing bag-of-words vectorizer that
+    extracted zero features genuinely cannot tell whether two zero-feature
+    texts are "the same". The correct, honest answer is NaN -- undefined,
+    not comparable -- for every pair involving at least one zero-vector
+    row, including a zero-vector row against itself and against a
+    genuinely non-zero row.
     """
     embeddings = np.array(
         [
@@ -73,42 +87,69 @@ def test_cosine_similarity_matrix_zero_vectors_are_self_similar_and_mutually_dup
     )
     sims = cosine_similarity_matrix(embeddings)
 
-    # Self-similarity of a zero vector is 1.0, not 0.0.
-    assert sims[0, 0] == pytest.approx(1.0)
-    assert sims[1, 1] == pytest.approx(1.0)
+    # Self-similarity of a zero vector is undefined, not 1.0 and not 0.0.
+    assert np.isnan(sims[0, 0])
+    assert np.isnan(sims[1, 1])
 
-    # Two identical zero vectors are duplicates of each other.
-    assert sims[0, 1] == pytest.approx(1.0)
-    assert sims[1, 0] == pytest.approx(1.0)
+    # Two zero vectors against each other are undefined too -- NOT silently
+    # 1.0 (over-correction) and NOT silently 0.0 (original bug).
+    assert np.isnan(sims[0, 1])
+    assert np.isnan(sims[1, 0])
 
-    # A zero vector against a genuinely non-zero vector is not similar --
-    # the fix must not make everything look similar to a zero vector.
-    assert sims[0, 2] == pytest.approx(0.0)
-    assert sims[1, 2] == pytest.approx(0.0)
+    # A zero vector against a genuinely non-zero vector is also undefined,
+    # not silently 0.0 -- the vectorizer still extracted no features from
+    # the zero row, so no similarity claim can be made either way.
+    assert np.isnan(sims[0, 2])
+    assert np.isnan(sims[1, 2])
+
+    # The non-zero row against itself is unaffected -- normal cosine
+    # similarity still applies once neither row is a zero vector.
+    assert sims[2, 2] == pytest.approx(1.0)
 
 
-def test_find_near_duplicates_flags_identical_zero_vector_rows():
-    """find_near_duplicates() flags two identical all-zero embedding rows as
-    a duplicate pair with similarity 1.0, without sweeping in a distinct
-    non-zero row."""
+def test_find_near_duplicates_never_flags_zero_vector_rows_as_duplicates():
+    """find_near_duplicates() never flags a zero-vector row as a duplicate of
+    anything -- not of a genuinely non-zero row, and not even of another
+    zero-vector row (the prior over-correction). Zero-vector rows are
+    instead surfaced separately via ``zero_vector_row_indices``."""
     embeddings = np.array(
         [
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],  # zero row A
+            [0.0, 0.0, 0.0],  # zero row B -- identical zero vector to A
+            [1.0, 0.0, 0.0],  # genuinely non-zero row
         ],
         dtype=np.float32,
     )
     report = find_near_duplicates(embeddings, threshold=NEAR_DUP_THRESHOLD)
 
     flagged = report.flagged_indices()
-    assert {0, 1}.issubset(flagged)  # identical zero-vector rows are duplicates
-    assert 2 not in flagged  # the non-zero row is not swept in as a false positive
+    assert flagged == set()  # no pair is a confirmed duplicate here
+    assert not any({pair.index_a, pair.index_b} == {0, 1} for pair in report.pairs)
 
-    assert any(
-        {pair.index_a, pair.index_b} == {0, 1} and pair.similarity == pytest.approx(1.0)
-        for pair in report.pairs
+    # Both zero-vector rows are reported as "not comparable", separately
+    # from the duplicate/distinct pair scan.
+    assert set(report.zero_vector_row_indices) == {0, 1}
+    assert 2 not in report.zero_vector_row_indices
+
+
+def test_find_near_duplicates_flags_identical_non_empty_text_no_regression():
+    """Regression guard: two rows with the exact same real (non-empty)
+    content still embed to the same non-zero vector and are still flagged
+    as duplicates -- the zero-vector fix must not touch this path at all."""
+    embeddings = np.array(
+        [
+            [0.6, 0.8, 0.0],  # non-zero row
+            [0.6, 0.8, 0.0],  # identical non-zero row -- a true duplicate
+            [0.0, 0.0, 1.0],  # distinct non-zero row
+        ],
+        dtype=np.float32,
     )
+    report = find_near_duplicates(embeddings, threshold=NEAR_DUP_THRESHOLD)
+
+    flagged = report.flagged_indices()
+    assert {0, 1}.issubset(flagged)
+    assert 2 not in flagged
+    assert report.zero_vector_row_indices == []
 
 
 def test_cosine_similarity_matrix_rejects_non_2d_input():
@@ -177,26 +218,96 @@ def test_detect_near_duplicate_text_accepts_arrow_backed_pandas_series(model):
     assert 2 not in report.flagged_indices()
 
 
-def test_detect_near_duplicate_text_flags_empty_and_whitespace_only_text_as_duplicates(model):
-    """End-to-end regression test for the concrete failure scenario: two
-    genuinely empty-text rows ("" and "   ") tokenize to zero tokens via
-    hashing_bag_of_words_vectorizer, so both embed to the identical all-zero
-    vector through the real EmbeddingModel/ONNX path (not hand-constructed
-    arrays). They must be flagged as near-duplicates, and the distinct
-    non-empty row must not be swept in.
+def test_detect_near_duplicate_text_reports_empty_and_whitespace_only_text_as_not_comparable(
+    model,
+):
+    """End-to-end regression test for the original failure scenario, updated
+    for the corrected design: two genuinely empty-text rows ("" and "   ")
+    tokenize to zero tokens via hashing_bag_of_words_vectorizer, so both
+    embed to the identical all-zero vector through the real
+    EmbeddingModel/ONNX path (not hand-constructed arrays).
+
+    This used to assert the two empty rows were flagged as duplicate pairs
+    (similarity 1.0). That was itself an over-correction of the original
+    bug (which silently read their similarity as 0.0, missing them
+    entirely) -- a hashing bag-of-words vectorizer that extracted zero
+    features from both cannot actually tell whether "" and "   " are "the
+    same" text or not, so neither silent guess is honest. The corrected,
+    most honest behavior is to report them as "zero-vector, not
+    comparable" via ``zero_vector_row_indices`` rather than either silently
+    missing them (original bug) or silently calling them duplicates
+    (the over-correction).
     """
     rows = ["", "   ", "The quick brown fox jumps over the lazy dog"]
     embeddings, report = detect_near_duplicate_text(rows, model, threshold=NEAR_DUP_THRESHOLD)
 
     # Sanity check that these two rows really do embed to the same all-zero
     # vector via the real preprocessor + ONNX model, i.e. this test actually
-    # exercises the bug scenario rather than some other coincidental match.
+    # exercises the zero-vector scenario rather than some other coincidental
+    # match.
     np.testing.assert_array_equal(embeddings[0], np.zeros(model.embedding_dim, dtype=np.float32))
     np.testing.assert_array_equal(embeddings[1], np.zeros(model.embedding_dim, dtype=np.float32))
 
+    # Not flagged as a duplicate pair -- a zero-vector row's similarity to
+    # anything, including another zero-vector row, is undefined.
+    assert report.flagged_indices() == set()
+    # Instead surfaced separately as "could not be compared".
+    assert set(report.zero_vector_row_indices) == {0, 1}
+    assert 2 not in report.zero_vector_row_indices
+
+
+def test_detect_near_duplicate_text_distinct_zero_vector_texts_are_not_flagged_as_duplicates(
+    model,
+):
+    """Two DIFFERENT texts that both happen to produce all-zero embeddings
+    (because hashing_bag_of_words_vectorizer's ``[a-z0-9]+`` tokenizer
+    matches no tokens in either of them) are not actually duplicates of
+    each other, and must not be flagged as such at any valid threshold --
+    this is exactly the CodeRabbit-flagged over-correction scenario:
+    punctuation-only and non-ASCII rows collapsing to the same zero vector
+    used to be reported as duplicates."""
+    rows = [
+        "!!!",  # punctuation only -- no [a-z0-9]+ tokens
+        "???",  # different punctuation only -- also no tokens, NOT a duplicate of row 0
+        "日本語",  # non-ASCII ("日本語") -- also no [a-z0-9]+ tokens
+        "The quick brown fox jumps over the lazy dog",  # genuinely non-zero, distinct
+    ]
+    embeddings, report = detect_near_duplicate_text(rows, model, threshold=NEAR_DUP_THRESHOLD)
+
+    # Sanity check: rows 0-2 really do all collapse to the identical
+    # all-zero vector, i.e. this test exercises the real over-correction
+    # scenario and not some other coincidental match.
+    zero_vec = np.zeros(model.embedding_dim, dtype=np.float32)
+    np.testing.assert_array_equal(embeddings[0], zero_vec)
+    np.testing.assert_array_equal(embeddings[1], zero_vec)
+    np.testing.assert_array_equal(embeddings[2], zero_vec)
+
+    # None of the zero-vector rows are flagged as duplicates of each other
+    # or of anything else.
+    assert report.flagged_indices() == set()
+    assert set(report.zero_vector_row_indices) == {0, 1, 2}
+    assert 3 not in report.zero_vector_row_indices
+
+
+def test_detect_near_duplicate_text_identical_non_empty_rows_still_flagged_no_regression(
+    model,
+):
+    """No-regression check: two rows with the exact same real, non-empty
+    content still embed to the same non-zero vector through the real
+    EmbeddingModel/ONNX path and are still flagged as duplicates -- the
+    zero-vector fix must not weaken detection of genuine duplicates."""
+    rows = [
+        "The quick brown fox jumps over the lazy dog",
+        "The quick brown fox jumps over the lazy dog",  # exact duplicate
+        "Quantum entanglement enables non-local correlations between particles",
+    ]
+    embeddings, report = detect_near_duplicate_text(rows, model, threshold=NEAR_DUP_THRESHOLD)
+
+    assert not np.all(embeddings[0] == 0.0)  # sanity: genuinely non-zero
     flagged = report.flagged_indices()
     assert {0, 1}.issubset(flagged)
     assert 2 not in flagged
+    assert report.zero_vector_row_indices == []
 
 
 def test_duplicate_pair_is_frozen_dataclass():

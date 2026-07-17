@@ -132,3 +132,88 @@ def test_scipy_matrix_accessor_requires_csr_or_csc_format():
     adapter = _make_adapter()
     with pytest.raises(RuntimeError):
         _ = adapter.scipy_matrix
+
+
+# -- edge-index contract validation (construction-time rejection) ---------
+
+
+def _valid_edge_index() -> torch.Tensor:
+    src = [e[0] for e in EDGES]
+    dst = [e[1] for e in EDGES]
+    return torch.tensor([src, dst], dtype=torch.long)
+
+
+def test_negative_num_nodes_rejected():
+    """`num_nodes <= 0` must raise `ValueError` at construction time."""
+    edge_index = _valid_edge_index()
+    with pytest.raises(ValueError, match="num_nodes"):
+        PyGSparseAdapter.from_edge_index(edge_index, num_nodes=-1)
+
+
+def test_zero_num_nodes_rejected():
+    """`num_nodes == 0` must raise `ValueError` at construction time."""
+    edge_index = torch.empty((2, 0), dtype=torch.long)
+    with pytest.raises(ValueError, match="num_nodes"):
+        PyGSparseAdapter.from_edge_index(edge_index, num_nodes=0)
+
+
+def test_non_integer_num_nodes_rejected():
+    """A non-integer `num_nodes` (e.g. a float) must raise `ValueError`."""
+    edge_index = _valid_edge_index()
+    with pytest.raises(ValueError, match="num_nodes"):
+        PyGSparseAdapter.from_edge_index(edge_index, num_nodes=8.5)  # type: ignore[arg-type]
+
+
+def test_out_of_range_node_index_rejected():
+    """An edge_index value >= num_nodes must raise a clear `ValueError`
+    naming the offending value, not silently corrupt the graph."""
+    edge_index = torch.tensor([[0, 1], [1, 100]], dtype=torch.long)
+    with pytest.raises(ValueError, match="100"):
+        PyGSparseAdapter.from_edge_index(edge_index, num_nodes=NUM_NODES)
+
+
+def test_negative_node_index_rejected():
+    """A negative edge_index value must raise a clear `ValueError` naming
+    the offending value."""
+    edge_index = torch.tensor([[0, -1], [1, 2]], dtype=torch.long)
+    with pytest.raises(ValueError, match="-1"):
+        PyGSparseAdapter.from_edge_index(edge_index, num_nodes=NUM_NODES)
+
+
+def test_non_integer_edge_index_dtype_rejected():
+    """A float-dtype edge_index must be rejected explicitly rather than
+    silently truncated by downstream SciPy/torch_geometric conversion."""
+    edge_index = torch.tensor([[0.0, 1.0], [1.0, 2.0]], dtype=torch.float32)
+    with pytest.raises(ValueError, match="dtype"):
+        PyGSparseAdapter.from_edge_index(edge_index, num_nodes=NUM_NODES)
+
+
+def test_mismatched_edge_weight_length_rejected():
+    """An `edge_weight` vector whose length differs from the number of
+    edges must raise a clear `ValueError` at construction time."""
+    edge_index = _valid_edge_index()
+    wrong_length_weight = torch.ones(len(EDGES) - 1, dtype=torch.float32)
+    with pytest.raises(ValueError, match="edge_weight"):
+        PyGSparseAdapter.from_edge_index(
+            edge_index, num_nodes=NUM_NODES, edge_weight=wrong_length_weight
+        )
+
+
+def test_matching_edge_weight_length_accepted():
+    """A correctly-sized `edge_weight` is accepted and preserved."""
+    edge_index = _valid_edge_index()
+    edge_weight = torch.arange(1, len(EDGES) + 1, dtype=torch.float32)
+    adapter = PyGSparseAdapter.from_edge_index(
+        edge_index, num_nodes=NUM_NODES, edge_weight=edge_weight
+    )
+    torch.testing.assert_close(adapter.edge_weight, edge_weight)
+
+
+def test_malformed_graph_never_reaches_to_csr_or_to_csc():
+    """Regression guard: an out-of-range edge index must be rejected at
+    `from_edge_index` construction, not survive until `.to_csr()` builds a
+    malformed SciPy matrix or a GCN forward pass runs on it."""
+    edge_index = torch.tensor([[0, 1], [1, 999]], dtype=torch.long)
+    with pytest.raises(ValueError):
+        adapter = PyGSparseAdapter.from_edge_index(edge_index, num_nodes=NUM_NODES)
+        adapter.to_csr()  # should never be reached

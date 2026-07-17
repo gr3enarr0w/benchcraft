@@ -190,7 +190,7 @@ def _require_onnx_stack() -> tuple[Any, Any]:
     return onnx, skl2onnx
 
 
-def compile(
+def compile(  # noqa: A001 -- intentional public API name, see architecture doc
     pipeline: Pipeline,
     sample_input: "pd.DataFrame | np.ndarray",
     *,
@@ -240,6 +240,24 @@ def compile(
 
     opts = options or CompileOptions()
     array = _as_numeric_array(sample_input)
+
+    # Guard against a sample_input whose feature count silently disagrees
+    # with what the fitted pipeline was trained on -- if left unchecked,
+    # this would produce an ONNX graph with the wrong input signature (or
+    # fail later, more confusingly, inside skl2onnx conversion or at ONNX
+    # Runtime inference time). Not every estimator/pipeline sets
+    # `n_features_in_` (e.g. a first step that doesn't implement sklearn's
+    # standard fitted-attribute convention), so this check is best-effort:
+    # skip it rather than raising on an unrelated AttributeError.
+    expected_features = getattr(pipeline, "n_features_in_", None)
+    if expected_features is not None and array.shape[1] != expected_features:
+        raise ValueError(
+            "compile() received a sample_input with "
+            f"{array.shape[1]} feature column(s), but the fitted pipeline "
+            f"was trained on {expected_features} feature column(s) "
+            "(pipeline.n_features_in_). sample_input must have the same "
+            "number of columns as the data the pipeline was fit on."
+        )
 
     onnx, skl2onnx = _require_onnx_stack()
     from skl2onnx.common.data_types import FloatTensorType

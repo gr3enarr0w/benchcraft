@@ -36,7 +36,7 @@ def small_model_and_config() -> tuple[torch.nn.Module, ModelConfig]:
 def test_export_to_onnx_writes_a_file(tmp_path, small_model_and_config) -> None:
     """export_to_onnx() must write a non-empty .onnx file to the given path."""
     model, config = small_model_and_config
-    example_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1)
+    example_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1, device="cpu")
     onnx_path = tmp_path / "tiny_cnn.onnx"
 
     export_to_onnx(model, example_input, onnx_path)
@@ -51,7 +51,7 @@ def test_exported_onnx_matches_pytorch_on_training_input(
     """verify_export() must report a match when run on the exact same
     example input that was used to trace the export."""
     model, config = small_model_and_config
-    example_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1)
+    example_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1, device="cpu")
     onnx_path = tmp_path / "tiny_cnn.onnx"
     export_to_onnx(model, example_input, onnx_path)
 
@@ -69,11 +69,11 @@ def test_exported_onnx_matches_pytorch_on_a_batch_of_fresh_random_inputs(
     the export -- the acceptance criteria call for checking a batch of
     random inputs, not just the exact tracing example."""
     model, config = small_model_and_config
-    trace_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1)
+    trace_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1, device="cpu")
     onnx_path = tmp_path / "tiny_cnn.onnx"
     export_to_onnx(model, trace_input, onnx_path)
 
-    fresh_input, _ = synthetic_classification_batch(config, batch_size=8, seed=999)
+    fresh_input, _ = synthetic_classification_batch(config, batch_size=8, seed=999, device="cpu")
 
     result = verify_export(model, onnx_path, fresh_input, atol=1e-4, rtol=1e-3)
 
@@ -86,7 +86,7 @@ def test_verify_export_raises_on_real_mismatch(tmp_path, small_model_and_config)
     than trivially passing: export one model, then verify a *different*
     model's output against that ONNX file, which must not match."""
     model, config = small_model_and_config
-    example_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1)
+    example_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1, device="cpu")
     onnx_path = tmp_path / "tiny_cnn.onnx"
     export_to_onnx(model, example_input, onnx_path)
 
@@ -105,7 +105,7 @@ def test_onnxruntime_output_is_a_real_numpy_computation(
     import onnxruntime
 
     model, config = small_model_and_config
-    example_input, _ = synthetic_classification_batch(config, batch_size=3, seed=2)
+    example_input, _ = synthetic_classification_batch(config, batch_size=3, seed=2, device="cpu")
     onnx_path = tmp_path / "tiny_cnn.onnx"
     export_to_onnx(model, example_input, onnx_path)
 

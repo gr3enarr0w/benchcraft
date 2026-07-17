@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repository currently contains **no source code** — only the architecture/planning document `Benchcraft_Unified_Architecture.md`. There is no build system, package manifest, test suite, or lint config yet. Do not assume any of these exist; check before running commands like `npm test`, `pytest`, etc. When code is eventually added, this file should be updated with real build/lint/test commands.
+This repository contains real source code under `packages/` — nine independently-installable Python packages (`lazycore` plus eight modules), each with its own `pyproject.toml`, `src/`, `tests/`, and `examples/`. Install a package with `pip install -e packages/<name>[dev]` (install `lazycore` first, since every other package depends on it) and run its tests with `pytest packages/<name>/tests`. See the module table and dependency graph below for what's built and how packages relate.
 
 ## What this document is
 
@@ -71,7 +71,7 @@ Once `lazycore` exists, these have **zero cross-module dependency** and can be b
 2. **Fix what's there before adding new.** Before writing a new file or function, search the target module (and `lazycore`) for an existing implementation of the same capability and extend/fix it in place. Don't create `foo_v2.py`, `foo_new.py`, or a parallel class hierarchy next to something that already does the job — this is the exact duplicated-ONNX-export failure mode the architecture doc was written to eliminate.
 3. **One canonical location per capability per module** (one export path, one preprocessing entrypoint, etc.).
 4. **Consistent per-module layout** (HF-style independent packaging, §2.7):
-   ```
+   ```text
    packages/<module>/
      pyproject.toml
      src/<module_pkg>/__init__.py   # public API surface

@@ -118,14 +118,63 @@ class PyGSparseAdapter(SparseGraphTensorAdapter):
     ) -> "PyGSparseAdapter":
         """Build a COO-native adapter from a PyG-style ``edge_index``.
 
-        ``edge_index`` must be a ``[2, num_edges]`` integer tensor. The
-        resulting adapter represents a square ``(num_nodes, num_nodes)``
-        adjacency matrix, which is the common case for MPNN inputs.
+        ``edge_index`` must be a ``[2, num_edges]`` integer tensor whose
+        values all lie in ``[0, num_nodes)``. The resulting adapter
+        represents a square ``(num_nodes, num_nodes)`` adjacency matrix,
+        which is the common case for MPNN inputs.
+
+        This validates the full edge-index contract at construction time
+        (not just its shape) so malformed graphs cannot survive until a
+        ``.to_csr()``/``.to_csc()`` SciPy conversion or a GCN forward pass:
+
+        Raises:
+            ValueError: If ``num_nodes`` is not a positive integer; if
+                ``edge_index`` does not have shape ``[2, num_edges]``; if
+                ``edge_index`` has a non-integer dtype; if any node index in
+                ``edge_index`` falls outside ``[0, num_nodes)``; or if
+                ``edge_weight`` is provided and its length does not match
+                the number of edges.
         """
+        import torch
+
+        if not isinstance(num_nodes, int) or isinstance(num_nodes, bool) or num_nodes <= 0:
+            raise ValueError(f"num_nodes must be a positive integer, got {num_nodes!r}")
+
         if edge_index.dim() != 2 or edge_index.shape[0] != 2:
             raise ValueError(
                 f"edge_index must have shape [2, num_edges], got {tuple(edge_index.shape)}"
             )
+
+        _integer_dtypes = (
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+            torch.uint8,
+        )
+        if edge_index.dtype not in _integer_dtypes:
+            raise ValueError(
+                f"edge_index must have an integer dtype, got {edge_index.dtype}"
+            )
+
+        num_edges = edge_index.shape[1]
+        if num_edges > 0:
+            min_index = int(edge_index.min().item())
+            max_index = int(edge_index.max().item())
+            if min_index < 0 or max_index >= num_nodes:
+                offending = min_index if min_index < 0 else max_index
+                raise ValueError(
+                    f"edge_index values must be within [0, {num_nodes}) for "
+                    f"num_nodes={num_nodes}, but found offending value "
+                    f"{offending}"
+                )
+
+        if edge_weight is not None and edge_weight.shape[0] != num_edges:
+            raise ValueError(
+                f"edge_weight length ({edge_weight.shape[0]}) must match the "
+                f"number of edges ({num_edges})"
+            )
+
         return cls(
             shape=(num_nodes, num_nodes),
             native_format=SparseFormat.COO,
@@ -165,6 +214,23 @@ class PyGSparseAdapter(SparseGraphTensorAdapter):
                 "call .to_coo() first."
             )
         return self._edge_index
+
+    @property
+    def edge_weight(self) -> "torch.Tensor | None":
+        """Optional per-edge weights aligned with :attr:`edge_index`.
+
+        Only meaningful when :attr:`native_format` is ``SparseFormat.COO``;
+        raises if the adapter currently holds CSR/CSC data (call
+        :meth:`to_coo` first). Returns ``None`` for an unweighted graph --
+        callers (e.g. `GCNConv`) should treat that as "no edge weights",
+        not as an error.
+        """
+        if self._native_format != SparseFormat.COO:
+            raise RuntimeError(
+                "edge_weight is only available on a COO-format adapter; "
+                "call .to_coo() first."
+            )
+        return self._edge_weight
 
     @property
     def scipy_matrix(self) -> sp.spmatrix:

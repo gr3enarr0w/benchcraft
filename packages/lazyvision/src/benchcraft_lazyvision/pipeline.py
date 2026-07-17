@@ -40,6 +40,8 @@ from PIL import Image
 
 from lazycore.data import DenseMediaPipeline
 
+from benchcraft_lazyvision.model import resolve_device
+
 __all__ = ["SimpleImagePipeline", "PipelineConfig"]
 
 
@@ -54,11 +56,20 @@ class PipelineConfig:
             a deterministic no-op augmentation.
         seed: Seed for the pipeline's own random generator, so augmentation
             is reproducible across runs -- useful for hermetic tests.
+        device: Where :meth:`SimpleImagePipeline.to_dense_tensor` places
+            the resulting tensor. Defaults to ``None``, which resolves via
+            `benchcraft_lazyvision.model.resolve_device` -- this package's
+            one canonical device-selection helper (MPS -> CUDA -> CPU,
+            mirroring `benchcraft_lazygraph.gcn.resolve_device`) -- so a
+            caller who does not specify a device gets MPS-first rather
+            than an implicit CPU default. Pass ``"cpu"`` explicitly for
+            hermetic/deterministic tests.
     """
 
     image_size: int = 32
     horizontal_flip_prob: float = 0.5
     seed: int = 0
+    device: str | torch.device | None = None
 
 
 class SimpleImagePipeline(DenseMediaPipeline):
@@ -83,6 +94,10 @@ class SimpleImagePipeline(DenseMediaPipeline):
         """
         self.config = config or PipelineConfig()
         self._rng = np.random.default_rng(self.config.seed)
+        preferred = (
+            str(self.config.device) if self.config.device is not None else None
+        )
+        self._device = resolve_device(preferred)
 
     def decode(self, raw: bytes) -> Image.Image:
         """Decode raw encoded image bytes (PNG/JPEG/...) into a PIL Image.
@@ -117,8 +132,11 @@ class SimpleImagePipeline(DenseMediaPipeline):
         The returned `torch.Tensor` implements ``__dlpack__`` /
         ``__dlpack_device__`` natively, satisfying
         `lazycore.data`'s ``_SupportsDLPack`` protocol -- no extra
-        conversion step is needed to comply with the Tier-3 contract.
+        conversion step is needed to comply with the Tier-3 contract. The
+        tensor is placed on ``self._device`` (resolved from
+        ``config.device`` via :func:`resolve_device` in ``__init__`` --
+        MPS-first by default, not a hardcoded CPU placement).
         """
         array = np.asarray(augmented, dtype=np.float32) / 255.0  # (H, W, C)
         chw = np.transpose(array, (2, 0, 1)).copy()  # (C, H, W), contiguous
-        return torch.from_numpy(chw)
+        return torch.from_numpy(chw).to(self._device)

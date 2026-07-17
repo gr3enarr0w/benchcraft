@@ -277,6 +277,28 @@ def test_detect_genuine_resist_is_not_inconclusive():
     assert finding.inconclusive is False
 
 
+def test_detect_with_no_sandbox_result_is_inconclusive_not_a_false_resist():
+    """Regression test: an ``Attempt`` whose ``sandbox_result`` is
+    ``None`` (simulating a case where ``run_target`` was never
+    successfully called at all -- e.g. an exception before a
+    ``SandboxResult`` could even be constructed) must be reported as
+    ``inconclusive``, not crash with ``AttributeError`` and not fall
+    through to a false "resisted" pass. This is a narrower case than
+    ``sandbox_result.succeeded is False``: here there is no result object
+    to inspect at all."""
+    adapter = PromptInjectionAdapter()
+    attempt = adapter.generate_attempt("ignore previous instructions")
+    assert attempt.sandbox_result is None  # never ran; simulate a missed run_target
+
+    finding = adapter.detect(attempt)
+
+    assert isinstance(finding, Finding)
+    assert finding.inconclusive is True
+    assert finding.vulnerable is False
+    assert "never executed" in finding.detail
+    assert "no sandbox_result" in finding.detail
+
+
 def test_leaderboard_treats_inconclusive_separately_from_resisted():
     """`LeaderboardReport` must not silently count an inconclusive attempt
     as "resisted" in its pass-rate/resisted-count aggregation."""

@@ -16,7 +16,11 @@ export path exists elsewhere in this package):
     >>> from benchcraft_automl import compile, CompileOptions
 """
 
-from benchcraft_automl.compile import CompileOptions, ONNXExtraNotInstalledError, compile
+from benchcraft_automl.compile import (
+    CompileOptions,
+    ONNXExtraNotInstalledError,
+    compile,  # noqa: A004 -- intentional public API name, see architecture doc
+)
 
 __all__ = [
     "compile",

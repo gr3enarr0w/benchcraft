@@ -12,7 +12,7 @@ import io
 import numpy as np
 import pytest
 import torch
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from benchcraft_lazyvision import PipelineConfig, SimpleImagePipeline
 from lazycore.data import DenseMediaPipeline
@@ -102,7 +102,10 @@ def test_augment_flip_is_deterministic_under_seed() -> None:
 def test_to_dense_tensor_shape_dtype_and_range() -> None:
     """to_dense_tensor() must produce a ``(C, H, W)`` float32 tensor with
     all values normalized into the ``[0, 1]`` range."""
-    config = PipelineConfig(image_size=32, horizontal_flip_prob=0.0)
+    # device explicitly pinned to CPU (rather than relying on the default
+    # MPS-first resolution) for hermetic, deterministic, portable
+    # automated verification -- see PipelineConfig's docstring.
+    config = PipelineConfig(image_size=32, horizontal_flip_prob=0.0, device="cpu")
     pipeline = SimpleImagePipeline(config)
     raw = _make_raw_image_bytes(size=(32, 32))
     decoded = pipeline.decode(raw)
@@ -125,7 +128,7 @@ def test_to_dense_tensor_satisfies_dlpack_protocol() -> None:
     # implements this natively; assert it explicitly so a future change to
     # to_dense_tensor's return type can't silently break the Tier-3
     # contract without a test failing.
-    pipeline = SimpleImagePipeline()
+    pipeline = SimpleImagePipeline(PipelineConfig(device="cpu"))
     raw = _make_raw_image_bytes()
     tensor = pipeline.run(raw)
     assert hasattr(tensor, "__dlpack__")
@@ -138,7 +141,7 @@ def test_run_driver_matches_manual_composition() -> None:
     """The inherited `DenseMediaPipeline.run` driver must produce the exact
     same tensor as manually chaining decode -> augment -> to_dense_tensor,
     for a fresh pipeline instance with matching config/seed."""
-    config = PipelineConfig(image_size=28, horizontal_flip_prob=0.0, seed=42)
+    config = PipelineConfig(image_size=28, horizontal_flip_prob=0.0, seed=42, device="cpu")
     pipeline = SimpleImagePipeline(config)
     raw = _make_raw_image_bytes(size=(28, 28))
 
@@ -155,7 +158,13 @@ def test_run_driver_matches_manual_composition() -> None:
 
 def test_decode_rejects_garbage_bytes() -> None:
     """decode() must raise rather than silently return a bogus image when
-    handed bytes that are not a valid encoded image."""
+    handed bytes that are not a valid encoded image.
+
+    Narrowed to `PIL.UnidentifiedImageError` (rather than the broad
+    `Exception`) since that is the specific exception `PIL.Image.open`
+    raises for undecodable bytes -- a bare `Exception` would also pass if
+    an unrelated `decode()` regression raised some other error, hiding a
+    real bug behind a spuriously-green test."""
     pipeline = SimpleImagePipeline()
-    with pytest.raises(Exception):
+    with pytest.raises(UnidentifiedImageError):
         pipeline.decode(b"not an image")

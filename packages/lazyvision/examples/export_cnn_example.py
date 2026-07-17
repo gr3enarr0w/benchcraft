@@ -44,6 +44,7 @@ from benchcraft_lazyvision import (
     SimpleImagePipeline,
     build_model,
     export_to_onnx,
+    resolve_device,
     synthetic_classification_batch,
     verify_export,
 )
@@ -93,9 +94,16 @@ def _load_real_digit_png_bytes(index: int = 0) -> tuple[bytes, int]:
 def main() -> None:
     print("=== benchcraft-lazyvision: pipeline + torch.export -> ONNX demo ===\n")
 
+    # Resolve the device once via the package's one canonical
+    # device-selection helper (MPS -> CUDA -> CPU, per CLAUDE.md's
+    # MPS-primary constraint) rather than hardcoding "cpu" -- a caller
+    # running this example on Apple Silicon gets MPS automatically.
+    device = resolve_device()
+    print(f"Resolved device: {device}\n")
+
     # --- 1. Run the DenseMediaPipeline on a synthetic image -----------
     pipeline_config = PipelineConfig(
-        image_size=IMAGE_SIZE, horizontal_flip_prob=0.5, seed=7
+        image_size=IMAGE_SIZE, horizontal_flip_prob=0.5, seed=7, device=device
     )
     pipeline = SimpleImagePipeline(pipeline_config)
     raw_bytes = _make_synthetic_image_bytes(size=40)  # deliberately not
@@ -113,7 +121,7 @@ def main() -> None:
     model_config = ModelConfig(
         in_channels=dense_tensor.shape[0], image_size=IMAGE_SIZE, num_classes=NUM_CLASSES
     )
-    model = build_model(model_config, seed=0, device="cpu")
+    model = build_model(model_config, seed=0, device=device)
     print(f"Built TinyCNN: {sum(p.numel() for p in model.parameters())} parameters")
 
     # A batch built from the pipeline's own output, used to trace the
@@ -133,7 +141,7 @@ def main() -> None:
 
         # --- 4. Verify correctness on a *fresh* batch of random inputs -
         verification_batch, _ = synthetic_classification_batch(
-            model_config, batch_size=8, seed=123, device="cpu"
+            model_config, batch_size=8, seed=123, device=device
         )
         result = verify_export(model, onnx_path, verification_batch, atol=1e-4, rtol=1e-3)
 
@@ -144,7 +152,7 @@ def main() -> None:
         print(f"  max_rel_diff:  {result.max_rel_diff:.3e}")
 
         with torch.no_grad():
-            sample_logits = model(verification_batch[:1]).numpy()
+            sample_logits = model(verification_batch[:1]).detach().cpu().numpy()
         print(f"\nSample PyTorch logits (first item): {sample_logits.round(4)}")
 
     # ====================================================================
@@ -162,7 +170,7 @@ def main() -> None:
 
     # --- 1'. Run the SAME SimpleImagePipeline on the real digit image ----
     real_pipeline = SimpleImagePipeline(
-        PipelineConfig(image_size=IMAGE_SIZE, horizontal_flip_prob=0.5, seed=7)
+        PipelineConfig(image_size=IMAGE_SIZE, horizontal_flip_prob=0.5, seed=7, device=device)
     )
     real_dense_tensor = real_pipeline.run(real_raw_bytes)  # decode() really parses the PNG.
     print(
@@ -175,7 +183,7 @@ def main() -> None:
     real_model_config = ModelConfig(
         in_channels=real_dense_tensor.shape[0], image_size=IMAGE_SIZE, num_classes=NUM_CLASSES
     )
-    real_model = build_model(real_model_config, seed=0, device="cpu")
+    real_model = build_model(real_model_config, seed=0, device=device)
     print(f"Built TinyCNN: {sum(p.numel() for p in real_model.parameters())} parameters")
 
     real_trace_batch = real_dense_tensor.unsqueeze(0).repeat(2, 1, 1, 1)  # (2, C, H, W)
@@ -202,7 +210,7 @@ def main() -> None:
         print(f"  max_rel_diff:  {real_result.max_rel_diff:.3e}")
 
         with torch.no_grad():
-            real_sample_logits = real_model(real_verification_batch).numpy()
+            real_sample_logits = real_model(real_verification_batch).detach().cpu().numpy()
         print(f"\nSample PyTorch logits (real digit, true label={real_label}): "
               f"{real_sample_logits.round(4)}")
 

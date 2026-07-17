@@ -80,15 +80,22 @@ class GCN(nn.Module):
             x: Node feature matrix of shape ``[num_nodes, in_channels]``.
             adapter: A :class:`PyGSparseAdapter` describing the graph
                 structure (any native format -- this converts to COO,
-                `GCNConv`'s required input format, internally).
+                `GCNConv`'s required input format, internally). If the
+                adapter carries per-edge weights, they are passed through
+                to each `GCNConv` layer; an unweighted adapter (``None``
+                edge weights) preserves `GCNConv`'s default unweighted
+                behavior exactly.
 
         Returns:
             Node output tensor of shape ``[num_nodes, out_channels]``.
         """
         coo_adapter = adapter.to_coo()
         edge_index = coo_adapter.edge_index.to(x.device)
+        edge_weight = coo_adapter.edge_weight
+        if edge_weight is not None:
+            edge_weight = edge_weight.to(x.device)
 
-        h = self.conv1(x, edge_index)
+        h = self.conv1(x, edge_index, edge_weight=edge_weight)
         h = F.relu(h)
-        h = self.conv2(h, edge_index)
+        h = self.conv2(h, edge_index, edge_weight=edge_weight)
         return h

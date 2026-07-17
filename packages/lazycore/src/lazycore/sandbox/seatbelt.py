@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -219,15 +221,76 @@ def _canonical(path: str) -> str:
     this is a classic source of "my allowed path doesn't work" bugs in
     hand-written Seatbelt profiles.
 
-    This function performs *no* safety validation of its own -- it is used
-    directly for ``allowed_executables`` (where bare, non-path names such
-    as ``"python3"`` are a documented, legitimate value and "resolving" one
-    is harmless/inert). For ``allowed_read_paths``/``allowed_write_paths``,
-    :func:`_reject_overbroad_allowed_path` wraps this with the Finding-2
-    anti-symlink-widening check below; use that instead for those two
-    fields.
+    This function performs *no* safety validation of its own, and -- unlike
+    an earlier version of this module -- it is **not** used for bare
+    (non-path) ``allowed_executables`` entries such as ``"python3"``.
+    ``Path("python3").resolve()`` resolves a bare name against the
+    *current working directory*, producing something like
+    ``<cwd>/python3`` -- a path that (almost) never exists and will never
+    match where the real ``python3`` executable actually lives on ``PATH``,
+    silently making the documented "bare names are resolved via PATH"
+    contract for ``allowed_executables`` a no-op that rejects the real
+    executable. Use :func:`_resolve_allowed_executable` for
+    ``allowed_executables`` entries instead. This function remains in use
+    for ``allowed_read_paths``/``allowed_write_paths`` (via
+    :func:`_reject_overbroad_allowed_path`, which wraps it with the
+    Finding-2 anti-symlink-widening check) and for the fixed, always-a-real-
+    path bootstrap read paths, where entries are never bare names.
     """
     return str(Path(path).resolve())
+
+
+def _resolve_allowed_executable(name: str) -> str:
+    """Resolve one ``allowed_executables`` entry to an absolute, canonical
+    path suitable for an SBPL ``(literal ...)`` clause.
+
+    ``allowed_executables`` documents bare command names (no path
+    separator, e.g. ``"python3"``) as a legitimate value, meant to be
+    resolved against ``PATH`` -- exactly like a shell would when exec'ing
+    an unqualified command name. Passing such a bare name through
+    :func:`_canonical` (plain ``Path.resolve()``) does *not* do that: it
+    resolves the name against the current working directory instead,
+    producing e.g. ``<cwd>/python3``, a path that almost never exists and
+    will never match the real executable's location -- silently turning
+    the documented allowlist entry into a rule that can never be satisfied
+    by the process the caller actually intended to allow.
+
+    This function instead:
+
+    - For an entry that already looks like a path (contains ``os.sep``, or
+      ``os.altsep`` on platforms that have one), resolves it exactly as
+      before via :func:`_canonical` (``Path.resolve()``) -- full/relative
+      paths are left to that existing, correct behavior.
+    - For a bare name (no path separator), resolves it via
+      :func:`shutil.which`, mirroring how the shell/``exec`` family would
+      actually locate it on this host's current ``PATH``, then canonicalizes
+      the result (resolving any symlinks, e.g. a Homebrew shim) via
+      :func:`_canonical`.
+
+    Raises:
+        ValueError: If a bare name cannot be resolved via ``PATH`` at
+            profile-build time -- silently emitting a bogus, never-matching
+            ``(literal ...)`` clause would be strictly worse than failing
+            loudly here, since the resulting policy would look like it
+            allows the executable while actually allowing nothing.
+    """
+    looks_like_path = os.sep in name or (os.altsep is not None and os.altsep in name)
+    if looks_like_path:
+        return _canonical(name)
+
+    resolved = shutil.which(name)
+    if resolved is None:
+        raise ValueError(
+            f"SandboxPolicy.allowed_executables entry {name!r} could not be "
+            "resolved via PATH (shutil.which() found nothing). Bare "
+            "executable names in allowed_executables are resolved against "
+            "PATH at profile-build time, exactly like a shell would -- if "
+            f"{name!r} is not on this process's PATH, the resulting policy "
+            "would silently never match the real executable. Either ensure "
+            f"{name!r} is installed and on PATH, or pass its full absolute "
+            "path instead."
+        )
+    return _canonical(resolved)
 
 
 def _reject_overbroad_allowed_path(path: str, *, kind: str) -> str:
@@ -325,7 +388,14 @@ def build_sbpl_profile(policy: SandboxPolicy) -> str:
     - **Executables:** if ``policy.allowed_executables`` is non-empty,
       ``process-exec`` is restricted to those literal paths; otherwise
       ``process-exec`` is left unrestricted (needed for ordinary shell
-      commands to exec `/bin/sh`, coreutils, `python3`, etc.).
+      commands to exec `/bin/sh`, coreutils, `python3`, etc.). Each entry
+      is resolved via :func:`_resolve_allowed_executable`, not plain
+      ``Path.resolve()``: a bare name with no path separator (e.g.
+      ``"python3"``) is resolved against ``PATH`` via :func:`shutil.which`
+      -- resolving it with ``Path.resolve()`` instead would silently
+      produce a bogus path relative to the current working directory
+      (``<cwd>/python3``) that the real executable never matches. An entry
+      that already looks like a path is resolved exactly as before.
 
     **Anti-widening check on read/write paths.** Each entry in
     ``allowed_read_paths``/``allowed_write_paths`` is resolved via
@@ -343,7 +413,9 @@ def build_sbpl_profile(policy: SandboxPolicy) -> str:
     Raises:
         ValueError: If an ``allowed_read_paths``/``allowed_write_paths``
             entry resolves to a suspiciously broad location -- see
-            :func:`_reject_overbroad_allowed_path`.
+            :func:`_reject_overbroad_allowed_path` -- or if a bare
+            ``allowed_executables`` entry cannot be resolved via ``PATH``
+            -- see :func:`_resolve_allowed_executable`.
     """
     lines = [
         "(version 1)",
@@ -402,7 +474,7 @@ def build_sbpl_profile(policy: SandboxPolicy) -> str:
     lines.append("; --- process execution ---")
     if policy.allowed_executables:
         exec_clauses = " ".join(
-            f'(literal "{_escape_sbpl_string(_canonical(p))}")'
+            f'(literal "{_escape_sbpl_string(_resolve_allowed_executable(p))}")'
             for p in policy.allowed_executables
         )
         lines.append(f"(allow process-exec {exec_clauses})")

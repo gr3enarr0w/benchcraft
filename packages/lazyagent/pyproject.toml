@@ -24,14 +24,16 @@ classifiers = [
 # Python callable matching AgentAdapter's documented signature; it is not a
 # registry/router of supported frameworks (§2.8).
 #
-# lazycore is a local sibling package (packages/lazycore) and is not listed
-# here as a formal path dependency -- hatchling/pip do not have a portable,
-# idiomatic way to express a relative-path dependency in pyproject.toml
-# metadata. Matching the convention established in packages/lazytune,
-# packages/automl, and packages/lazyred: install it first --
-# `pip install -e packages/lazycore` -- before installing this package.
-# See README "Installation".
-dependencies = []
+# lazycore is a local sibling package (packages/lazycore). It is declared
+# here as a bare (unpinned) dependency name -- matching the convention
+# established in packages/automl, packages/lazyforecast, packages/lazygraph,
+# and packages/lazytune -- so a normal `pip install` resolves it instead of
+# silently succeeding and failing at import time. It still must be
+# installed first (or made resolvable, e.g. via an editable install/local
+# index) since it is not published to PyPI -- see README "Installation".
+dependencies = [
+    "lazycore",
+]
 
 [project.optional-dependencies]
 dev = [

@@ -54,9 +54,25 @@ def main() -> None:
         print(f"    [{pair.index_b}] {ROWS[pair.index_b]!r}")
 
     flagged = report.flagged_indices()
-    distinct_rows = [i for i in range(len(ROWS)) if i not in flagged]
+    distinct_rows = [
+        i
+        for i in range(len(ROWS))
+        if i not in flagged and i not in report.zero_vector_row_indices
+    ]
     print()
     print(f"Rows not flagged as near-duplicates: {distinct_rows}")
+    if report.zero_vector_row_indices:
+        # None of ROWS above hit this in practice (they're all real
+        # sentences), but this field exists precisely because a
+        # hashing-vectorizer row that extracts zero features (e.g. empty,
+        # whitespace-only, punctuation-only, or non-ASCII text the
+        # tokenizer's [a-z0-9]+ regex can't match) cannot be honestly
+        # scored as either a duplicate or distinct -- see the README's
+        # "Zero-vector rows" section.
+        print(
+            "Rows that produced no extractable features (not comparable): "
+            f"{report.zero_vector_row_indices}"
+        )
 
 
 if __name__ == "__main__":

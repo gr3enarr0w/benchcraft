@@ -82,11 +82,26 @@ mirrors that same pattern:
   `HF_HUB_OFFLINE`-style environment concern at all, ever. It sidesteps the
   licensing question entirely because there is no external checkpoint to
   license-check.
-- **Real production path (documented, not exercised by tests):**
-  `MODEL_ALLOWLIST` (a per-module `lazycore.licensing.Allowlist` instance,
-  per architecture doc §2.10) registers `openai-community/gpt2` (OpenAI's
-  original GPT-2 "small", 124M params) as Tier 1, MIT-licensed. To
-  fine-tune it for real:
+- **Real production path (documented, not exercised by tests, and requires
+  one adjustment to run):** `MODEL_ALLOWLIST` (a per-module
+  `lazycore.licensing.Allowlist` instance, per architecture doc §2.10)
+  registers `openai-community/gpt2` (OpenAI's original GPT-2 "small", 124M
+  params) as Tier 1, MIT-licensed. **Important:**
+  `ProgrammaticAdapter.train_step` and `compute_loss` call
+  `tokenizer.batch_encode(batch)` unconditionally -- a method that exists on
+  `TinyTokenizer` but **not** on a real HuggingFace tokenizer (a real
+  `AutoTokenizer`/`PreTrainedTokenizerBase` has no `batch_encode` method at
+  all; the closest equivalent is calling the tokenizer directly, e.g.
+  `tokenizer(texts, padding=True, return_tensors="pt")`). Passing a real
+  `(model, tokenizer)` pair to `prepare()` and then calling `train_step()`
+  as shown below will raise `AttributeError: 'GPT2TokenizerFast' object has
+  no attribute 'batch_encode'` -- it is **not** a drop-in replacement yet.
+  To actually fine-tune a real checkpoint, wrap the real tokenizer in a
+  small adapter object that exposes a `batch_encode(texts) -> {"input_ids":
+  ..., "attention_mask": ..., "labels": ...}` method (mirroring
+  `TinyTokenizer.batch_encode`'s contract, including setting padded
+  positions in `labels` to `-100`) and pass `(model, wrapped_tokenizer)` to
+  `prepare()` instead:
 
   ```python
   from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -97,17 +112,27 @@ mirrors that same pattern:
   model = AutoModelForCausalLM.from_pretrained(RECOMMENDED_BASE_MODEL_NAME)  # network access on first use
   tokenizer = AutoTokenizer.from_pretrained(RECOMMENDED_BASE_MODEL_NAME)
 
+  class RealTokenizerAdapter:
+      """Minimal shim so a real HF tokenizer satisfies TinyTokenizer's batch_encode contract."""
+
+      def __init__(self, tokenizer):
+          self._tokenizer = tokenizer
+
+      def batch_encode(self, texts):
+          encoded = self._tokenizer(texts, padding=True, return_tensors="pt")
+          labels = encoded["input_ids"].clone()
+          labels[encoded["attention_mask"] == 0] = -100
+          return {**encoded, "labels": labels}
+
   adapter = ProgrammaticAdapter()
-  adapter.prepare((model, tokenizer), dataset=["your real training text..."])
+  adapter.prepare((model, RealTokenizerAdapter(tokenizer)), dataset=["your real training text..."])
   result = adapter.train_step(["a training batch..."])
   ```
 
-  Note the real tokenizer path returns plain `input_ids`/`attention_mask`
-  tensors directly from `tokenizer(...)`, unlike `TinyTokenizer` -- adjust
-  `ProgrammaticAdapter.train_step`'s batch-encoding call accordingly if you
-  wire this in (the hermetic path's `TinyTokenizer.batch_encode` is
-  intentionally minimal and specific to `build_hermetic_causal_lm`'s
-  from-scratch vocabulary).
+  This shim (and the `train_step`/`compute_loss` call sites that assume a
+  `TinyTokenizer`-shaped `batch_encode`) is scaffold-depth, illustrative
+  code, not a tested/shipped part of this package -- see "What's deferred
+  and why" above.
 
 ## MoE-over-dense guidance (informational, no code impact at this scope)
 
@@ -173,11 +198,11 @@ explicit `(model, tokenizer)` tuple to fine-tune a real base model (see
 
 ## Installation
 
-`lazycore` is a local sibling package under `packages/lazycore` and is not
-declared as a formal `pyproject.toml` dependency (hatchling/pip have no
-portable relative-path dependency syntax) -- install it first, matching the
-convention already established by `packages/automl` and
-`packages/lazyclean`:
+`lazycore` is a local sibling package under `packages/lazycore`, declared as
+a bare (unpinned) `pyproject.toml` dependency -- matching the convention
+already established by `packages/automl`, `packages/lazyforecast`, and
+`packages/lazygraph`. Since it isn't published to a package index, install
+it first so pip can resolve the dependency from the local editable install:
 
 ```bash
 pip install -e packages/lazycore

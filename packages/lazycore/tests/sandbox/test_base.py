@@ -46,6 +46,49 @@ def test_sandbox_policy_is_frozen():
         policy.allow_network = True  # type: ignore[misc]
 
 
+def test_sandbox_policy_env_is_immutable_and_isolated_from_the_original_dict():
+    """policy.env is coerced to an immutable mapping at construction time: mutating the original dict passed in afterward does not change the effective policy, and attempting to mutate policy.env directly raises rather than silently succeeding.
+
+    This is the regression test for the CodeRabbit finding that
+    SandboxPolicy.env could still be mutated in place after construction
+    despite the dataclass being frozen=True -- frozen dataclasses only
+    block *field reassignment* (policy.env = {...}), not in-place mutation
+    of a mutable object a field happens to point at (policy.env["x"] = "y").
+    """
+    original = {"FOO": "bar"}
+    policy = SandboxPolicy(env=original)
+
+    # Mutating the original dict object passed in must not affect the
+    # policy -- proves a defensive copy was taken, not just a reference.
+    original["FOO"] = "mutated-after-construction"
+    original["NEW_KEY"] = "should-not-appear"
+    assert policy.env["FOO"] == "bar"
+    assert "NEW_KEY" not in policy.env
+
+    # Attempting to mutate policy.env directly must raise, not silently
+    # succeed -- this is the core of the finding: a frozen dataclass whose
+    # mutable-typed field can still be mutated in place defeats the
+    # frozen=True promise.
+    with pytest.raises(TypeError):
+        policy.env["FOO"] = "attempted-mutation"  # type: ignore[index]
+
+    # MappingProxyType doesn't even expose .update() -- it isn't a mutable
+    # mapping at all, so this raises AttributeError rather than TypeError.
+    with pytest.raises(AttributeError):
+        policy.env.update({"BAZ": "qux"})  # type: ignore[union-attr]
+
+    # Read access still works exactly like a plain dict.
+    assert dict(policy.env) == {"FOO": "bar"}
+    assert policy.env["FOO"] == "bar"
+
+
+def test_sandbox_policy_env_default_is_immutable_too():
+    """Even the default (no env passed) SandboxPolicy().env is the same immutable-mapping type, not a plain mutable dict -- the coercion in __post_init__ applies unconditionally, not only when a caller passes one."""
+    policy = SandboxPolicy()
+    with pytest.raises(TypeError):
+        policy.env["X"] = "y"  # type: ignore[index]
+
+
 def test_sandbox_policy_with_overrides_returns_new_instance():
     """with_overrides() returns a distinct copy with only the given fields changed, leaving the original untouched."""
     base = SandboxPolicy(allow_network=False)

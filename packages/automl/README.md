@@ -105,11 +105,17 @@ interop helpers of its own. This is used purely for reporting; `compile()`
 still coerces to a plain numeric numpy array for `skl2onnx`, since that is
 what the ONNX conversion path actually needs, not an Arrow buffer.
 
-`lazycore` is a local sibling package (`packages/lazycore`) and is
-**installed separately, not as a formal pyproject dependency of this
-package** -- hatchling/pip don't have a portable, idiomatic way to express
-a relative-path dependency in `pyproject.toml` metadata the way e.g.
-Poetry's `path = "../lazycore"` does. Install it first (see below).
+`lazycore` is a local sibling package (`packages/lazycore`), not a package
+published to PyPI. It **is** declared in `pyproject.toml`'s `dependencies`
+(as a bare, unpinned `"lazycore"`) so that a resolver run without it
+already installed fails fast with a clear "could not find lazycore" error
+instead of succeeding and then failing at import time inside
+`benchcraft_automl.compile`. That declaration does **not** make a plain
+`pip install packages/automl` work in isolation, though -- hatchling/pip
+don't have a portable, idiomatic way to express a relative-path dependency
+in `pyproject.toml` metadata the way e.g. Poetry's `path = "../lazycore"`
+does. You must still install it first (see below), which satisfies the
+declared dependency before it's ever resolved against PyPI.
 
 ## Installation (local dev)
 

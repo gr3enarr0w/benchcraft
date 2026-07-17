@@ -51,6 +51,61 @@ class _ContainsBadAdapter(BaseSecurityAdapter):
         )
 
 
+class _NeverExecutedAdapter(BaseSecurityAdapter):
+    """Simulates an attempt that was never actually executed against the
+    target at all: ``run_target`` deliberately leaves
+    ``attempt.sandbox_result`` as ``None`` (e.g. standing in for a real
+    adapter that hit an exception before a ``SandboxResult`` could even be
+    constructed), rather than returning a failed/crashed
+    ``SandboxResult``. Used to verify the aggregation logic correctly
+    excludes this ``None``-triggered inconclusive case from
+    ``resisted_count``/``pass_rate``, the same way it already does for the
+    ``sandbox_result.succeeded=False`` case -- without assuming that
+    coverage generalizes without a dedicated test."""
+
+    probe_id = "never_executed"
+
+    def generate_attempt(self, probe_input: str) -> Attempt:
+        return Attempt(probe_id=self.probe_id, payload=probe_input, prompt=probe_input)
+
+    def run_target(self, attempt: Attempt, executor: BaseSandboxExecutor) -> Attempt:
+        # Deliberately does not call the executor and leaves
+        # sandbox_result as None -- the attempt was never executed.
+        return attempt
+
+    def detect(self, attempt: Attempt) -> Finding:
+        if attempt.sandbox_result is None:
+            return Finding(
+                probe_id=attempt.probe_id,
+                vulnerable=False,
+                severity=SecuritySeverity.INFO,
+                owasp_mapping=("LLM01: Prompt Injection",),
+                detail="Attempt was never executed (no sandbox_result recorded).",
+                attempt=attempt,
+                inconclusive=True,
+            )
+        raise AssertionError("sandbox_result should always be None in this stub")
+
+
+def test_leaderboard_excludes_none_sandbox_result_inconclusive_from_resisted():
+    """Regression coverage for the narrower ``sandbox_result is None`` case
+    (never executed at all, as opposed to executed-but-failed): the
+    leaderboard must exclude these from ``resisted_count``/``pass_rate``
+    exactly like the existing ``succeeded=False`` inconclusive case."""
+    adapter = _NeverExecutedAdapter()
+    executor = _NoOpExecutor()
+
+    report = run_leaderboard(adapter, executor, ["payload one", "payload two", "payload three"])
+
+    assert report.total_attempts == 3
+    assert report.vulnerable_count == 0
+    assert report.inconclusive_count == 3
+    assert report.resisted_count == 0
+    assert report.pass_rate == 0.0
+    assert report.failure_rate == 0.0
+    assert "INCONCLUSIVE" in report.format_summary()
+
+
 def test_run_leaderboard_aggregates_mixed_pass_fail():
     """With 2 of 4 payloads containing "bad", ``run_leaderboard`` produces a
     report with the correct total/vulnerable/resisted counts and a 50%
