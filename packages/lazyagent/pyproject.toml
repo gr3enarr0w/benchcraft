@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "benchcraft-lazyagent"
+version = "0.1.0"
+description = "Benchcraft LazyAgent: a bring-your-own-agent AgentAdapter pattern -- a rule-based reference agent executes file-manipulation tool-use tasks through the shared lazycore sandbox executor, scored for success/latency and reported via OTel GenAI telemetry."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Benchcraft" }]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+# Per architecture doc Part 3 ("Module 8: LazyAgent"): this module is
+# deliberately stdlib + lazycore only at this scaffold depth. It does NOT
+# depend on smolagents/langgraph/autogen/camel -- those are real framework
+# integrations for future work, not pulled in here (see README "Scope").
+# "Bring your own agent" means the core loop accepts any caller-supplied
+# Python callable matching AgentAdapter's documented signature; it is not a
+# registry/router of supported frameworks (§2.8).
+#
+# lazycore is a local sibling package (packages/lazycore) and is not listed
+# here as a formal path dependency -- hatchling/pip do not have a portable,
+# idiomatic way to express a relative-path dependency in pyproject.toml
+# metadata. Matching the convention established in packages/lazytune,
+# packages/automl, and packages/lazyred: install it first --
+# `pip install -e packages/lazycore` -- before installing this package.
+# See README "Installation".
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/benchcraft_lazyagent"]

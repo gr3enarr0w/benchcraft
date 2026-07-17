@@ -1,0 +1,85 @@
+"""Minimal GCN forward pass consuming a :class:`PyGSparseAdapter`.
+
+This is the *one* canonical GCN path in this package (per CLAUDE.md's
+"one canonical location per capability" rule) -- there is no second/
+parallel message-passing implementation anywhere else here. It uses the
+real `torch_geometric.nn.GCNConv` op (per the architecture doc's naming of
+`GCNConv` directly and its instruction to prefer using the real library
+over hand-rolling message-passing), not a reimplementation of
+normalized-adjacency aggregation.
+
+Scope (see package README for the full list of deferred capabilities):
+this module implements a single-layer-configurable stack of `GCNConv`
+layers only. GAT, GraphSAGE, Graph Transformers/Laplacian Positional
+Encodings, neighborhood sampling, and oversmoothing/oversquashing
+monitoring are explicitly out of scope for this pass.
+"""
+
+from __future__ import annotations
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+from torch_geometric.nn import GCNConv
+
+from benchcraft_lazygraph.sparse import PyGSparseAdapter
+
+__all__ = ["GCN", "resolve_device"]
+
+
+def resolve_device(preferred: str | None = None) -> torch.device:
+    """Pick a compute device, defaulting to CPU with a clean fallback.
+
+    Per CLAUDE.md: never hardcode ``cuda``. This picks MPS if available
+    (the primary backend for this platform per CLAUDE.md), else CUDA if
+    available, else CPU -- but always falls back cleanly rather than
+    raising if a caller passes an unavailable ``preferred`` device.
+    """
+    if preferred is not None:
+        try:
+            device = torch.device(preferred)
+            # Smoke-test the device is actually usable.
+            torch.zeros(1, device=device)
+            return device
+        except Exception:
+            pass  # fall through to auto-detection
+
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+class GCN(nn.Module):
+    """A minimal 2-layer Graph Convolutional Network.
+
+    Consumes node features plus a :class:`PyGSparseAdapter` (converted
+    internally to COO, PyG's native input format for `GCNConv`) and
+    produces per-node output embeddings/logits.
+    """
+
+    def __init__(self, in_channels: int, hidden_channels: int, out_channels: int) -> None:
+        super().__init__()
+        self.conv1 = GCNConv(in_channels, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, out_channels)
+
+    def forward(self, x: torch.Tensor, adapter: PyGSparseAdapter) -> torch.Tensor:
+        """Run the forward pass.
+
+        Args:
+            x: Node feature matrix of shape ``[num_nodes, in_channels]``.
+            adapter: A :class:`PyGSparseAdapter` describing the graph
+                structure (any native format -- this converts to COO,
+                `GCNConv`'s required input format, internally).
+
+        Returns:
+            Node output tensor of shape ``[num_nodes, out_channels]``.
+        """
+        coo_adapter = adapter.to_coo()
+        edge_index = coo_adapter.edge_index.to(x.device)
+
+        h = self.conv1(x, edge_index)
+        h = F.relu(h)
+        h = self.conv2(h, edge_index)
+        return h

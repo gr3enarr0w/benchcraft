@@ -1,0 +1,210 @@
+"""Concrete Tier-2 sparse graph tensor adapter (architecture doc §2.1).
+
+``lazycore.data.SparseGraphTensorAdapter`` defines only the *shape* of the
+COO / CSR-CSC conversion boundary and deliberately depends on nothing
+graph-related. This module provides the first concrete implementation of
+that interface for Benchcraft: a bridge between PyTorch Geometric's native
+COO ``edge_index`` representation and ``scipy.sparse``'s CSR/CSC formats.
+
+This is the "SciPy sparse bridge" named in §2.1's Tier-2 row -- a genuine,
+unavoidable conversion step (DLPack cannot represent sparsity), not a
+metadata relabel. Every ``to_*`` conversion here actually builds a new
+in-memory sparse structure in the target format.
+
+Per CLAUDE.md's "fix what's there / one canonical implementation" rule:
+this is the *only* sparse-tensor adapter in this package. Do not add a
+second/parallel adapter class or reimplement
+``lazycore.data.SparseGraphTensorAdapter`` here -- subclass it, as done
+below.
+
+Licensing note (§2.2, §2.4 of Module 4's description): this module uses
+only ``scipy.sparse`` and ``numpy`` for the CSR/CSC bridge. It never
+imports or depends on SuiteSparse/CHOLMOD (GPLv2+) or `torch-sparse`
+(the optional METIS-linked carrier) -- see the package README's licensing
+section.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import numpy as np
+import scipy.sparse as sp
+
+from lazycore.data import SparseFormat, SparseGraphTensorAdapter
+
+if TYPE_CHECKING:  # pragma: no cover - type-checking-only import
+    import torch
+
+__all__ = ["PyGSparseAdapter"]
+
+
+class PyGSparseAdapter(SparseGraphTensorAdapter):
+    """Concrete Tier-2 adapter bridging PyG-native COO and SciPy CSR/CSC.
+
+    Holds a PyTorch Geometric-style ``edge_index`` tensor (``torch.Tensor``
+    of shape ``[2, num_edges]``, row 0 = source node indices, row 1 =
+    target node indices) plus the dense ``(num_rows, num_cols)`` shape of
+    the adjacency matrix it represents. Optionally carries per-edge
+    weights; unweighted graphs are treated as all-ones edge weights.
+
+    This adapter is intentionally format-tagged: an instance constructed
+    via :meth:`from_edge_index` starts life in COO format (PyG's native
+    representation), and calling :meth:`to_csr`/:meth:`to_csc` returns a
+    *new* adapter instance holding a ``scipy.sparse`` matrix in that format
+    instead, with :attr:`native_format` updated accordingly. Converting
+    back to COO from a CSR/CSC-backed instance reconstructs a fresh
+    ``edge_index`` tensor from the SciPy matrix's COO view.
+    """
+
+    def __init__(
+        self,
+        *,
+        shape: tuple[int, int],
+        native_format: str,
+        edge_index: "torch.Tensor | None" = None,
+        edge_weight: "torch.Tensor | None" = None,
+        scipy_matrix: sp.spmatrix | None = None,
+    ) -> None:
+        if native_format not in (SparseFormat.COO, SparseFormat.CSR, SparseFormat.CSC):
+            raise ValueError(f"Unknown sparse format: {native_format!r}")
+        if native_format == SparseFormat.COO and edge_index is None:
+            raise ValueError("COO-format PyGSparseAdapter requires edge_index.")
+        if native_format in (SparseFormat.CSR, SparseFormat.CSC) and scipy_matrix is None:
+            raise ValueError(
+                f"{native_format.upper()}-format PyGSparseAdapter requires scipy_matrix."
+            )
+
+        self._shape = shape
+        self._native_format = native_format
+        self._edge_index = edge_index
+        self._edge_weight = edge_weight
+        self._scipy_matrix = scipy_matrix
+
+    # -- construction -------------------------------------------------
+
+    @classmethod
+    def from_edge_index(
+        cls,
+        edge_index: "torch.Tensor",
+        num_nodes: int,
+        edge_weight: "torch.Tensor | None" = None,
+    ) -> "PyGSparseAdapter":
+        """Build a COO-native adapter from a PyG-style ``edge_index``.
+
+        ``edge_index`` must be a ``[2, num_edges]`` integer tensor. The
+        resulting adapter represents a square ``(num_nodes, num_nodes)``
+        adjacency matrix, which is the common case for MPNN inputs.
+        """
+        if edge_index.dim() != 2 or edge_index.shape[0] != 2:
+            raise ValueError(
+                f"edge_index must have shape [2, num_edges], got {tuple(edge_index.shape)}"
+            )
+        return cls(
+            shape=(num_nodes, num_nodes),
+            native_format=SparseFormat.COO,
+            edge_index=edge_index,
+            edge_weight=edge_weight,
+        )
+
+    # -- SparseGraphTensorAdapter interface ----------------------------
+
+    @property
+    def native_format(self) -> str:
+        return self._native_format
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self._shape
+
+    @property
+    def edge_index(self) -> "torch.Tensor":
+        """The PyG-native ``[2, num_edges]`` COO edge index.
+
+        Only meaningful when :attr:`native_format` is ``SparseFormat.COO``;
+        raises if the adapter currently holds CSR/CSC data (call
+        :meth:`to_coo` first).
+        """
+        if self._native_format != SparseFormat.COO or self._edge_index is None:
+            raise RuntimeError(
+                "edge_index is only available on a COO-format adapter; "
+                "call .to_coo() first."
+            )
+        return self._edge_index
+
+    @property
+    def scipy_matrix(self) -> sp.spmatrix:
+        """The underlying ``scipy.sparse`` matrix for a CSR/CSC adapter."""
+        if self._scipy_matrix is None:
+            raise RuntimeError(
+                "scipy_matrix is only available on a CSR/CSC-format "
+                "adapter; call .to_csr() or .to_csc() first."
+            )
+        return self._scipy_matrix
+
+    def to_coo(self) -> "PyGSparseAdapter":
+        """Return a COO-format adapter (PyG-native)."""
+        import torch
+
+        if self._native_format == SparseFormat.COO:
+            return self
+
+        coo = self._scipy_matrix.tocoo()
+        edge_index = torch.as_tensor(
+            np.vstack([coo.row, coo.col]), dtype=torch.long
+        )
+        edge_weight = None
+        if not np.allclose(coo.data, 1.0):
+            edge_weight = torch.as_tensor(coo.data, dtype=torch.float32)
+        return PyGSparseAdapter(
+            shape=self._shape,
+            native_format=SparseFormat.COO,
+            edge_index=edge_index,
+            edge_weight=edge_weight,
+        )
+
+    def to_csr(self) -> "PyGSparseAdapter":
+        """Return a CSR-format adapter via a real ``scipy.sparse`` build."""
+        if self._native_format == SparseFormat.CSR:
+            return self
+        return PyGSparseAdapter(
+            shape=self._shape,
+            native_format=SparseFormat.CSR,
+            scipy_matrix=self._to_scipy_coo().tocsr(),
+        )
+
+    def to_csc(self) -> "PyGSparseAdapter":
+        """Return a CSC-format adapter via a real ``scipy.sparse`` build."""
+        if self._native_format == SparseFormat.CSC:
+            return self
+        return PyGSparseAdapter(
+            shape=self._shape,
+            native_format=SparseFormat.CSC,
+            scipy_matrix=self._to_scipy_coo().tocsc(),
+        )
+
+    # -- helpers --------------------------------------------------------
+
+    def _to_scipy_coo(self) -> sp.coo_matrix:
+        """Build a ``scipy.sparse.coo_matrix`` from whatever this adapter
+        currently holds. This is the real conversion step -- it always
+        materializes a new SciPy structure, it never just relabels."""
+        if self._native_format == SparseFormat.COO:
+            edge_index = self._edge_index.detach().cpu().numpy()
+            if self._edge_weight is not None:
+                data = self._edge_weight.detach().cpu().numpy()
+            else:
+                data = np.ones(edge_index.shape[1], dtype=np.float32)
+            return sp.coo_matrix(
+                (data, (edge_index[0], edge_index[1])), shape=self._shape
+            )
+        # CSR/CSC-backed: SciPy handles the reformat internally.
+        return self._scipy_matrix.tocoo()
+
+    def to_dense_numpy(self) -> np.ndarray:
+        """Convenience: materialize the full dense adjacency matrix.
+
+        Used by tests to verify structural equivalence across formats; not
+        part of the abstract interface.
+        """
+        return self._to_scipy_coo().toarray()

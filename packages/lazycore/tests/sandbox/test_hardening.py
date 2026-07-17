@@ -1,0 +1,208 @@
+"""Regression tests for the three confirmed security-review findings on
+`lazycore.sandbox` (macOS Seatbelt backend + shared SandboxPolicy):
+
+1. `policy_blocked` conflating Seatbelt denial with generic Unix
+   permission errors.
+2. Symlinked `allowed_write_paths`/`allowed_read_paths` entries silently
+   widening the granted policy via `Path.resolve()`.
+3. Relative paths in `SandboxPolicy` resolving against call-time CWD
+   rather than construction-time CWD, despite `frozen=True`.
+
+Tests for (2) and (3) are pure Python (no `sandbox-exec` invocation) and
+run on any platform. Test for (1) actually invokes `/usr/bin/sandbox-exec`
+(to prove the *default* Seatbelt-unrestricted-read profile is really in
+effect) and is skipped on non-macOS hosts, matching this package's existing
+convention in `test_seatbelt.py`.
+"""
+
+from __future__ import annotations
+
+import os
+import platform
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from lazycore.sandbox.base import SandboxPolicy
+from lazycore.sandbox.seatbelt import SeatbeltSandboxExecutor, build_sbpl_profile
+
+# ---------------------------------------------------------------------------
+# Finding 1: policy_blocked false positives from ordinary DAC/permission
+# errors that have nothing to do with Seatbelt.
+# ---------------------------------------------------------------------------
+
+pytestmark_macos = pytest.mark.skipif(
+    platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").exists(),
+    reason="Requires macOS with /usr/bin/sandbox-exec present",
+)
+
+
+@pytestmark_macos
+def test_chmod_000_file_under_default_policy_is_not_misclassified_as_policy_blocked():
+    """Concrete false-positive scenario from the finding: `cat` on a
+    permission-000 file under the DEFAULT policy (where
+    `build_sbpl_profile` emits an unconditional, unrestricted
+    `(allow file-read*)` -- Seatbelt never fires for reads at all here).
+
+    This proves the false positive described in the finding is eliminated
+    for this concrete, representative case (a read-only command whose
+    resource class the active policy does not restrict at all) -- it does
+    not claim the heuristic is now perfect for arbitrary commands/policies;
+    see `_classify_denial`'s docstring for the honest scope of the fix.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("chmod 000 does not deny root; cannot exercise this DAC error as root")
+
+    executor = SeatbeltSandboxExecutor()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        blocked_file = Path(tmp_dir) / "no-access.txt"
+        blocked_file.write_text("secret content")
+        blocked_file.chmod(0o000)
+        try:
+            result = executor.run_command(["/bin/cat", str(blocked_file)])
+        finally:
+            blocked_file.chmod(0o644)  # restore so tempdir cleanup can remove it
+
+        # The command must genuinely have failed (proving this is a real
+        # DAC error, not a no-op) ...
+        assert result.exit_code != 0
+        assert "Permission denied" in result.stderr
+        # ... but must NOT be misclassified as a Seatbelt policy denial,
+        # since the default policy places zero restriction on reads.
+        assert result.policy_blocked is False
+
+
+@pytestmark_macos
+def test_write_outside_allowed_path_is_still_classified_as_policy_blocked():
+    """Regression guard: the Finding-1 precision fix must not turn off
+    detection of *real* Seatbelt denials. `touch` is not in the read-only
+    command allowlist, so this must still be classified as policy_blocked.
+    """
+    executor = SeatbeltSandboxExecutor()
+    with tempfile.TemporaryDirectory() as allowed_dir, tempfile.TemporaryDirectory() as other_dir:
+        forbidden_target = str(Path(other_dir) / "should-not-be-created.txt")
+        policy = SandboxPolicy(allowed_write_paths=(allowed_dir,))
+
+        result = executor.run_command(["/usr/bin/touch", forbidden_target], policy=policy)
+
+        assert result.exit_code != 0
+        assert result.policy_blocked is True
+        assert not Path(forbidden_target).exists()
+
+
+@pytestmark_macos
+def test_chmod_000_file_under_restricted_read_policy_is_still_flagged():
+    """When allowed_read_paths IS configured (reads ARE restricted by the
+    generated profile), a permission error on a path outside that allowlist
+    is plausibly Seatbelt's doing, so the allowlist-based downgrade in
+    `_classify_denial` must not apply here -- this documents that the
+    fix is intentionally narrow in scope (only overrides the classification
+    when the profile provably grants unrestricted reads).
+    """
+    executor = SeatbeltSandboxExecutor()
+    with tempfile.TemporaryDirectory() as allowed_dir, tempfile.TemporaryDirectory() as other_dir:
+        outside_file = Path(other_dir) / "outside.txt"
+        outside_file.write_text("outside content")
+        policy = SandboxPolicy(allowed_read_paths=(allowed_dir,))
+
+        result = executor.run_command(["/bin/cat", str(outside_file)], policy=policy)
+
+        assert result.exit_code != 0
+        assert result.policy_blocked is True
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: symlinked allowed-path entries silently widening the policy.
+# ---------------------------------------------------------------------------
+
+
+def test_symlinked_allowed_write_path_pointing_at_root_is_rejected():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        evil_link = Path(tmp_dir) / "looks-scoped-but-is-not"
+        evil_link.symlink_to("/")
+        policy = SandboxPolicy(allowed_write_paths=(str(evil_link),))
+
+        with pytest.raises(ValueError, match="broad"):
+            build_sbpl_profile(policy)
+
+
+def test_symlinked_allowed_read_path_pointing_at_home_dir_is_rejected():
+    home = Path.home()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        evil_link = Path(tmp_dir) / "looks-scoped-but-is-not"
+        evil_link.symlink_to(home)
+        policy = SandboxPolicy(allowed_read_paths=(str(evil_link),))
+
+        with pytest.raises(ValueError, match="broad"):
+            build_sbpl_profile(policy)
+
+
+def test_directly_specifying_a_broad_system_directory_is_also_rejected():
+    # Not even a symlink -- the finding's fix also protects a caller who
+    # directly (mistakenly) passes a suspiciously broad path.
+    policy = SandboxPolicy(allowed_write_paths=("/etc",))
+    with pytest.raises(ValueError, match="broad"):
+        build_sbpl_profile(policy)
+
+
+def test_legitimate_tmp_symlink_is_not_rejected():
+    # /tmp -> /private/tmp on macOS is the canonical benign OS-provided
+    # symlink this fix must NOT break (see _canonical's original docstring
+    # and _reject_overbroad_allowed_path's docstring).
+    policy = SandboxPolicy(allowed_write_paths=("/tmp",))
+    profile = build_sbpl_profile(policy)
+    assert "/private/tmp" in profile or "/tmp" in profile
+
+
+def test_ordinary_scoped_subdirectory_is_not_rejected():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        scoped = Path(tmp_dir) / "project-workspace"
+        scoped.mkdir()
+        policy = SandboxPolicy(allowed_write_paths=(str(scoped),))
+        profile = build_sbpl_profile(policy)
+        assert str(scoped.resolve()) in profile
+
+
+# ---------------------------------------------------------------------------
+# Finding 3: relative paths in SandboxPolicy resolving against call-time CWD.
+# ---------------------------------------------------------------------------
+
+
+def test_relative_allowed_write_path_raises_immediately_at_construction():
+    with pytest.raises(ValueError, match="absolute"):
+        SandboxPolicy(allowed_write_paths=("relative/write/path",))
+
+
+def test_relative_allowed_read_path_raises_immediately_at_construction():
+    with pytest.raises(ValueError, match="absolute"):
+        SandboxPolicy(allowed_read_paths=("relative/read/path",))
+
+
+def test_relative_working_directory_raises_immediately_at_construction():
+    with pytest.raises(ValueError, match="absolute"):
+        SandboxPolicy(working_directory="relative/dir")
+
+
+def test_with_overrides_also_rejects_relative_paths():
+    base = SandboxPolicy()
+    with pytest.raises(ValueError, match="absolute"):
+        base.with_overrides(allowed_write_paths=("relative/path",))
+
+
+def test_bare_executable_name_is_still_accepted_non_absolute():
+    # allowed_executables is documented to accept bare PATH-resolved names
+    # -- this must remain unaffected by the Finding-3 fix.
+    policy = SandboxPolicy(allowed_executables=("python3", "/usr/bin/env"))
+    assert policy.allowed_executables == ("python3", "/usr/bin/env")
+
+
+def test_absolute_paths_still_construct_normally():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        policy = SandboxPolicy(
+            allowed_write_paths=(tmp_dir,),
+            allowed_read_paths=(tmp_dir,),
+            working_directory=tmp_dir,
+        )
+        assert policy.allowed_write_paths == (tmp_dir,)
+        assert policy.working_directory == tmp_dir
