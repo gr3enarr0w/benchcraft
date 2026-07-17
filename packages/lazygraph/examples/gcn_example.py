@@ -55,6 +55,13 @@ def make_erdos_renyi_edge_index(num_nodes: int, p: float, seed: int = 0) -> torc
 
 
 def run_synthetic_section(device: torch.device) -> None:
+    """Build a synthetic Erdos-Renyi graph and run it through the adapter/GCN.
+
+    Wraps the generated edge list in `PyGSparseAdapter`, converts it to CSR
+    then CSC purely to demonstrate the real `scipy.sparse` format bridge,
+    then runs a two-layer `GCN` forward pass over random node features and
+    asserts the output has the expected shape and is entirely finite.
+    """
     print("=" * 70)
     print("Section 1: synthetic Erdos-Renyi graph")
     print("=" * 70)
@@ -101,6 +108,14 @@ def run_synthetic_section(device: torch.device) -> None:
 
 
 def run_real_dataset_section(device: torch.device) -> None:
+    """Run the same adapter/GCN pipeline against the real KarateClub graph.
+
+    Loads `torch_geometric.datasets.KarateClub` (bundled in-process, no
+    network access), wraps its edge index in the same `PyGSparseAdapter`
+    used for the synthetic section, converts to CSR/CSC to show the format
+    bridge still works on real data, and runs a `GCN` forward pass
+    configured for the dataset's real 4-class faction split.
+    """
     print()
     print("=" * 70)
     print("Section 2: real graph -- torch_geometric.datasets.KarateClub")
@@ -153,6 +168,7 @@ def run_real_dataset_section(device: torch.device) -> None:
 
 
 def main() -> None:
+    """Resolve a compute device and run both the synthetic and real demo sections."""
     device = resolve_device()
     print(f"Using device: {device}")
     print()

@@ -36,18 +36,22 @@ def _plain_numpy_frame() -> "pd.DataFrame":
 
 
 def test_is_arrow_backed_pandas_true_for_arrow_dtype_frame():
+    """A DataFrame with all columns converted to the pyarrow dtype backend is reported as Arrow-backed."""
     assert is_arrow_backed_pandas(_arrow_backed_frame()) is True
 
 
 def test_is_arrow_backed_pandas_false_for_plain_numpy_frame():
+    """A DataFrame with plain numpy-backed columns is reported as not Arrow-backed."""
     assert is_arrow_backed_pandas(_plain_numpy_frame()) is False
 
 
 def test_is_arrow_backed_pandas_true_for_empty_frame():
+    """An empty (columnless) DataFrame is trivially considered Arrow-backed."""
     assert is_arrow_backed_pandas(pd.DataFrame()) is True
 
 
 def test_pandas_arrow_dtypes_reports_only_arrow_columns():
+    """pandas_arrow_dtypes() returns only the names of columns backed by ArrowDtype, excluding a plain numpy float64 column added to the same frame."""
     mixed = _arrow_backed_frame()
     mixed["c"] = [1.0, 2.0, 3.0]  # plain numpy float64 column
     dtypes = pandas_arrow_dtypes(mixed)
@@ -56,6 +60,7 @@ def test_pandas_arrow_dtypes_reports_only_arrow_columns():
 
 
 def test_roundtrip_pandas_to_polars_and_back_preserves_data():
+    """Converting an Arrow-backed pandas frame to Polars and back preserves all values and lands the result back on the Arrow-backed tier."""
     original = _arrow_backed_frame()
     as_polars = to_polars_zero_copy(original)
     assert isinstance(as_polars, pl.DataFrame)
@@ -77,18 +82,21 @@ def test_roundtrip_pandas_to_polars_and_back_preserves_data():
 
 
 def test_sparse_graph_tensor_adapter_is_abstract():
+    """SparseGraphTensorAdapter is an ABC and cannot be instantiated directly since it has unimplemented abstract methods."""
     assert issubclass(SparseGraphTensorAdapter, abc.ABC)
     with pytest.raises(TypeError):
         SparseGraphTensorAdapter()  # abstract methods not implemented
 
 
 def test_sparse_format_constants():
+    """SparseFormat exposes the expected COO/CSR/CSC string constants."""
     assert SparseFormat.COO == "coo"
     assert SparseFormat.CSR == "csr"
     assert SparseFormat.CSC == "csc"
 
 
 def test_concrete_sparse_adapter_subclass_satisfies_interface():
+    """A minimal concrete subclass implementing all abstract members can be instantiated and its native_format/shape/to_coo() behave as defined."""
     class ToyCooAdapter(SparseGraphTensorAdapter):
         def __init__(self, shape: tuple[int, int]) -> None:
             self._shape = shape
@@ -122,11 +130,13 @@ def test_concrete_sparse_adapter_subclass_satisfies_interface():
 
 
 def test_dense_media_pipeline_is_abstract():
+    """DenseMediaPipeline cannot be instantiated directly since it has unimplemented abstract methods."""
     with pytest.raises(TypeError):
         DenseMediaPipeline()  # abstract methods not implemented
 
 
 def test_concrete_dense_media_pipeline_runs_decode_augment_export():
+    """run() drives a concrete pipeline through decode -> augment -> to_dense_tensor in order, and the resulting tensor genuinely supports the DLPack protocol."""
     calls: list[str] = []
 
     class ToyTensor:

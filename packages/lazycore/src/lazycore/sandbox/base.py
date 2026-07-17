@@ -226,6 +226,12 @@ class SandboxResult:
 
     @property
     def succeeded(self) -> bool:
+        """True if the command exited zero and no policy block was detected.
+
+        Convenience combining :attr:`exit_code` and :attr:`policy_blocked`
+        into a single pass/fail check for the common case where a caller
+        doesn't need to distinguish *why* a run failed.
+        """
         return self.exit_code == 0 and not self.policy_blocked
 
 
@@ -240,6 +246,14 @@ class BaseSandboxExecutor(abc.ABC):
     """
 
     def __init__(self, policy: SandboxPolicy | None = None) -> None:
+        """Create an executor with the given active policy.
+
+        Args:
+            policy: Initial :class:`SandboxPolicy` to apply. Defaults to a
+                freshly-constructed, maximally-restrictive ``SandboxPolicy()``
+                (no network, no read/write paths, no allowed executables)
+                when omitted.
+        """
         self._policy: SandboxPolicy = policy or SandboxPolicy()
 
     @property

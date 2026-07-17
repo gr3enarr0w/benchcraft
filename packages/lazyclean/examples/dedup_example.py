@@ -27,6 +27,8 @@ ROWS = [
 
 
 def main() -> None:
+    """Build the synthetic embedding model, run the dedup pipeline over
+    ``ROWS``, and print the flagged near-duplicate pairs plus distinct rows."""
     model = build_synthetic_embedding_model(vocab_dim=128, embedding_dim=32)
 
     print(f"Embedding {len(ROWS)} rows via ONNX Runtime (no PyTorch/transformers)...")

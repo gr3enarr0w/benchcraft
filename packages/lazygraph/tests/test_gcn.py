@@ -19,6 +19,7 @@ OUT_CHANNELS = 3
 
 
 def _make_adapter() -> PyGSparseAdapter:
+    """Build a small bidirectional ring-graph `PyGSparseAdapter` for tests."""
     # Small ring graph, made bidirectional (undirected) so every node has
     # at least one neighbor for message passing.
     src = list(range(NUM_NODES)) + list(range(1, NUM_NODES)) + [0]
@@ -33,6 +34,7 @@ def _make_adapter() -> PyGSparseAdapter:
 
 
 def test_gcn_forward_pass_output_shape_and_finiteness():
+    """A COO-backed adapter through `GCN` yields finite, correctly shaped output."""
     torch.manual_seed(0)
     device = resolve_device()
 
@@ -67,10 +69,13 @@ def test_gcn_accepts_csr_backed_adapter_too():
 
 
 def test_resolve_device_falls_back_cleanly_for_bogus_preference():
+    """Passing an unavailable/invalid preferred device string should not raise --
+    `resolve_device` should fall through to auto-detection instead."""
     device = resolve_device(preferred="not-a-real-device")
     assert device.type in ("cpu", "mps", "cuda")
 
 
 def test_resolve_device_default_never_raises():
+    """Calling `resolve_device` with no arguments always returns a valid `torch.device`."""
     device = resolve_device()
     assert isinstance(device, torch.device)

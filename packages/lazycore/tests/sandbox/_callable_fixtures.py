@@ -12,8 +12,10 @@ from __future__ import annotations
 
 
 def compute_answer() -> int:
+    """Return 42, a trivial picklable callable for run_callable() success tests."""
     return 6 * 7
 
 
 def raise_value_error() -> None:
+    """Raise ValueError, a trivial picklable callable for run_callable() failure tests."""
     raise ValueError("boom from sandboxed callable")

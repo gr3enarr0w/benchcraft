@@ -23,6 +23,14 @@ from benchcraft_lazyred import (
 
 
 def main() -> None:
+    """Run the prompt-injection probe through the real sandbox and print a report.
+
+    Builds the shared sandbox executor and LazyRed's mode-specific policy,
+    runs :class:`PromptInjectionAdapter` against 8 payload variations (a mix
+    of known injection triggers and benign controls), and prints the
+    resulting :class:`~benchcraft_lazyred.leaderboard.LeaderboardReport`
+    summary to stdout.
+    """
     # The shared lazycore sandbox executor (§2.3) -- picks the real
     # SeatbeltSandboxExecutor on macOS. LazyRed supplies its own
     # mode-specific SandboxPolicy on top (build_probe_sandbox_policy),

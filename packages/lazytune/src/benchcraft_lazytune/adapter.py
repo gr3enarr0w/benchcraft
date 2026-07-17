@@ -120,6 +120,14 @@ class TinyTokenizer:
     UNK_TOKEN = "<unk>"
 
     def __init__(self, vocab: dict[str, int]) -> None:
+        """Wrap a pre-built vocabulary mapping token strings to integer ids.
+
+        Args:
+            vocab: token -> id mapping that must already contain both
+                :data:`PAD_TOKEN` and :data:`UNK_TOKEN`. Prefer
+                :meth:`build_from_corpus` over calling this directly unless
+                you already have a vocabulary in hand.
+        """
         self.vocab = vocab
         self.pad_id = vocab[self.PAD_TOKEN]
         self.unk_id = vocab[self.UNK_TOKEN]
@@ -135,9 +143,14 @@ class TinyTokenizer:
 
     @property
     def vocab_size(self) -> int:
+        """Number of entries in the vocabulary (including pad/unk tokens)."""
         return len(self.vocab)
 
     def encode(self, text: str) -> list[int]:
+        """Lowercase + whitespace-split ``text`` into a list of vocabulary ids.
+
+        Tokens not present in the vocabulary map to :attr:`unk_id`.
+        """
         return [self.vocab.get(token, self.unk_id) for token in text.lower().split()]
 
     def batch_encode(self, texts: Sequence[str]) -> dict[str, torch.Tensor]:
@@ -298,6 +311,16 @@ class ProgrammaticAdapter(BaseTrainingAdapter):
         lora_config: LoraConfig | None = None,
         learning_rate: float = 5e-3,
     ) -> None:
+        """Construct an untrained adapter; call :meth:`prepare` before use.
+
+        Args:
+            lora_config: LoRA configuration to wrap the base model with.
+                Defaults to :func:`default_lora_config` (targets GPT-2's
+                ``c_attn`` projection with a tiny rank) when not provided.
+            learning_rate: learning rate for the ``torch.optim.AdamW``
+                optimizer created over the LoRA-only trainable parameters
+                once :meth:`prepare` is called.
+        """
         self.lora_config = lora_config or default_lora_config()
         self.learning_rate = learning_rate
         self.model: PeftModel | None = None
@@ -306,6 +329,25 @@ class ProgrammaticAdapter(BaseTrainingAdapter):
         self._step = 0
 
     def prepare(self, model_ref: object, dataset: Sequence[str]) -> None:
+        """Build/attach the base model, wrap it with LoRA, and set up the optimizer.
+
+        Args:
+            model_ref: ``None`` to build the hermetic from-scratch model via
+                :func:`build_hermetic_causal_lm` (sized off ``dataset``), or
+                an explicit ``(model, tokenizer)`` tuple to fine-tune a real
+                base model instead (e.g. the checkpoint documented in
+                :data:`MODEL_ALLOWLIST`).
+            dataset: training text corpus. Only used to size/derive the
+                hermetic tokenizer's vocabulary when ``model_ref`` is
+                ``None``; ignored otherwise.
+
+        Raises:
+            RuntimeError: if wrapping the base model with
+                ``self.lora_config`` via `peft`'s ``get_peft_model``
+                produces no trainable parameters (usually a sign that
+                ``lora_config.target_modules`` doesn't match any module
+                name on the base model).
+        """
         if model_ref is None:
             base_model, tokenizer = build_hermetic_causal_lm(dataset)
         else:
@@ -348,6 +390,23 @@ class ProgrammaticAdapter(BaseTrainingAdapter):
                 model.train()
 
     def train_step(self, batch: Sequence[str]) -> TrainStepResult:
+        """Run one real forward + backward + ``optimizer.step()`` update on ``batch``.
+
+        Tokenizes ``batch`` with the prepared tokenizer, computes the causal
+        LM loss, backpropagates through the LoRA parameters only (the base
+        model's weights are frozen by `peft`), and applies one AdamW step.
+
+        Args:
+            batch: a small in-memory sequence of training text strings.
+
+        Returns:
+            A :class:`TrainStepResult` with the scalar loss for this step
+            and the running step counter (starts at 1, incremented on every
+            call).
+
+        Raises:
+            RuntimeError: if called before :meth:`prepare`.
+        """
         model, tokenizer = self._require_prepared()
         assert self.optimizer is not None
 
@@ -363,6 +422,19 @@ class ProgrammaticAdapter(BaseTrainingAdapter):
         return TrainStepResult(loss=float(loss.detach().item()), step=self._step)
 
     def save_adapter(self, path: str | Path) -> None:
+        """Persist only the LoRA adapter weights (not the frozen base model) to ``path``.
+
+        Creates parent directories as needed and delegates to `peft`'s
+        ``PeftModel.save_pretrained``, which writes ``adapter_config.json``
+        plus an ``adapter_model.*`` weights file. The saved directory can be
+        reloaded onto a matching base model via ``PeftModel.from_pretrained``.
+
+        Args:
+            path: destination directory for the adapter files.
+
+        Raises:
+            RuntimeError: if called before :meth:`prepare`.
+        """
         model, _tokenizer = self._require_prepared()
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

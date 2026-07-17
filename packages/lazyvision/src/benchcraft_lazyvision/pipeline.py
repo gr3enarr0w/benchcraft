@@ -71,6 +71,16 @@ class SimpleImagePipeline(DenseMediaPipeline):
     """
 
     def __init__(self, config: PipelineConfig | None = None) -> None:
+        """Create the pipeline and seed its private augmentation RNG.
+
+        Args:
+            config: Behavior knobs (image size, flip probability, seed).
+                Defaults to ``PipelineConfig()``. The RNG used by
+                :meth:`augment` is seeded from ``config.seed`` here, once,
+                so repeated calls to :meth:`augment`/:meth:`run` on the same
+                pipeline instance are reproducible but not identical (the
+                RNG's internal state advances across calls).
+        """
         self.config = config or PipelineConfig()
         self._rng = np.random.default_rng(self.config.seed)
 

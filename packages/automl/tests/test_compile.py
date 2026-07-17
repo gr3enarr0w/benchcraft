@@ -31,6 +31,13 @@ onnx = pytest.importorskip("onnx")
 
 
 def _fit_scaler_logreg_pipeline(random_state: int = 0) -> tuple[Pipeline, np.ndarray, np.ndarray]:
+    """Build and fit a StandardScaler + LogisticRegression pipeline for tests.
+
+    Returns the fitted pipeline along with the training features (unused by
+    most callers, but returned for the pandas-DataFrame test that needs
+    matching column counts) and a float32 test split ready to feed straight
+    into `compile()` or an ONNX Runtime session.
+    """
     X, y = make_classification(
         n_samples=300,
         n_features=8,
@@ -53,6 +60,12 @@ def _fit_scaler_logreg_pipeline(random_state: int = 0) -> tuple[Pipeline, np.nda
 
 
 def _run_onnx(onnx_model, X: np.ndarray) -> np.ndarray:
+    """Run `X` through a compiled ONNX model on the CPU execution provider.
+
+    Returns the raw list of `onnxruntime` session outputs (typically
+    `[labels, probabilities]` for a classifier), letting each test assert on
+    whichever output index it cares about.
+    """
     session = onnxruntime.InferenceSession(
         onnx_model.SerializeToString(), providers=["CPUExecutionProvider"]
     )
@@ -62,23 +75,33 @@ def _run_onnx(onnx_model, X: np.ndarray) -> np.ndarray:
 
 
 def test_public_api_surface():
+    """`compile`, `CompileOptions`, and `ONNXExtraNotInstalledError` are all
+    importable from the top-level `benchcraft_automl` package, and
+    `benchcraft_automl.compile` is the same object as
+    `benchcraft_automl.compile.compile` (one canonical export path)."""
     assert benchcraft_automl.compile is compile
     assert hasattr(benchcraft_automl, "CompileOptions")
     assert hasattr(benchcraft_automl, "ONNXExtraNotInstalledError")
 
 
 def test_compile_rejects_non_pipeline():
+    """`compile()` raises `TypeError` when given a bare estimator instead of
+    an `sklearn.pipeline.Pipeline`."""
     with pytest.raises(TypeError):
         compile(LogisticRegression(), np.zeros((1, 3)))
 
 
 def test_compile_rejects_unfitted_pipeline():
+    """`compile()` raises `NotFittedError` for a `Pipeline` whose steps have
+    never been fit, before any ONNX conversion is attempted."""
     pipeline = Pipeline(steps=[("scaler", StandardScaler()), ("clf", LogisticRegression())])
     with pytest.raises(NotFittedError):
         compile(pipeline, np.zeros((1, 3)))
 
 
 def test_compile_produces_valid_onnx_model():
+    """`compile()` returns an `onnx.ModelProto` that passes
+    `onnx.checker.check_model`, i.e. a structurally valid ONNX graph."""
     pipeline, _, X_test = _fit_scaler_logreg_pipeline()
     onnx_model = compile(pipeline, X_test)
     assert isinstance(onnx_model, onnx.ModelProto)
@@ -86,6 +109,8 @@ def test_compile_produces_valid_onnx_model():
 
 
 def test_compiled_onnx_predictions_match_sklearn_predict():
+    """Running the compiled ONNX graph through `onnxruntime` yields the same
+    class labels as the original fitted pipeline's `predict()`."""
     pipeline, _, X_test = _fit_scaler_logreg_pipeline()
     onnx_model = compile(pipeline, X_test)
 
@@ -97,6 +122,9 @@ def test_compiled_onnx_predictions_match_sklearn_predict():
 
 
 def test_compiled_onnx_predictions_match_sklearn_predict_proba():
+    """With `zipmap=False`, the compiled ONNX graph's second output is a
+    plain probability tensor that matches the original pipeline's
+    `predict_proba()` within `1e-4` absolute tolerance."""
     pipeline, _, X_test = _fit_scaler_logreg_pipeline()
     onnx_model = compile(pipeline, X_test, options=CompileOptions(zipmap=False))
 
@@ -108,6 +136,10 @@ def test_compiled_onnx_predictions_match_sklearn_predict_proba():
 
 
 def test_compile_accepts_pandas_dataframe_input():
+    """`compile()` accepts a pandas DataFrame as `sample_input` (coercing it
+    to a numeric array internally) and still produces an ONNX graph whose
+    predictions match the sklearn pipeline run on the equivalent numpy
+    array."""
     pd = pytest.importorskip("pandas")
     pipeline, X_train, X_test = _fit_scaler_logreg_pipeline()
     df_test = pd.DataFrame(X_test, columns=[f"f{i}" for i in range(X_test.shape[1])])
@@ -120,6 +152,10 @@ def test_compile_accepts_pandas_dataframe_input():
 
 
 def test_compile_raises_typeerror_for_non_numeric_dataframe_column():
+    """`compile()` raises `TypeError` (not a raw pandas/numpy `ValueError`)
+    when `sample_input` is a DataFrame with a non-numeric column, and the
+    error message names the offending column and mentions the float32
+    target dtype."""
     pd = pytest.importorskip("pandas")
     pipeline, _, X_test = _fit_scaler_logreg_pipeline()
 
@@ -137,6 +173,10 @@ def test_compile_raises_typeerror_for_non_numeric_dataframe_column():
 
 
 def test_compile_on_breast_cancer_dataset_end_to_end():
+    """End-to-end smoke test on a real (non-synthetic) dataset: a
+    StandardScaler + LogisticRegression pipeline fit on
+    `load_breast_cancer()` compiles to ONNX and the ONNX graph's predicted
+    labels exactly match the sklearn pipeline's `predict()` output."""
     data = load_breast_cancer()
     X_train, X_test, y_train, _ = train_test_split(
         data.data, data.target, test_size=0.25, random_state=42

@@ -91,6 +91,13 @@ class ForecastConfig:
     n_jobs: int = 1
 
     def __post_init__(self) -> None:
+        """Validate ``models``/``horizon`` immediately at construction time.
+
+        Raises:
+            ValueError: ``models`` contains a name outside
+                :data:`SUPPORTED_MODELS`, ``models`` is empty, or
+                ``horizon`` is less than 1.
+        """
         unknown = set(self.models) - set(SUPPORTED_MODELS)
         if unknown:
             raise ValueError(

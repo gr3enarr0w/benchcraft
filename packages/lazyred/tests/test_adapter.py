@@ -52,11 +52,18 @@ class _EchoAdapter(BaseSecurityAdapter):
 
 
 def test_base_security_adapter_cannot_be_instantiated_directly():
+    """``BaseSecurityAdapter`` is an ABC with abstract methods, so
+    instantiating it directly (without a concrete subclass implementing
+    ``generate_attempt``/``run_target``/``detect``) must raise ``TypeError``."""
     with pytest.raises(TypeError):
         BaseSecurityAdapter()  # type: ignore[abstract]
 
 
 def test_attempt_defaults_are_none_until_populated():
+    """A freshly-constructed ``Attempt`` has ``prompt``/``raw_output``/
+    ``sandbox_result`` still unset (``None``) and an empty ``metadata``
+    dict, since those fields are only filled in as the attempt moves
+    through ``generate_attempt`` -> ``run_target`` -> ``detect``."""
     attempt = Attempt(probe_id="p", payload="x")
     assert attempt.prompt is None
     assert attempt.raw_output is None
@@ -65,6 +72,10 @@ def test_attempt_defaults_are_none_until_populated():
 
 
 def test_run_chains_generate_run_detect():
+    """``BaseSecurityAdapter.run()`` chains all three steps end to end: for
+    a payload containing "bad", the stub adapter's ``run_target`` records
+    the echoed output and sandbox result, and ``detect`` correctly flags
+    the resulting ``Finding`` as vulnerable."""
     adapter = _EchoAdapter()
     executor = _StubExecutor()
 
@@ -79,6 +90,8 @@ def test_run_chains_generate_run_detect():
 
 
 def test_run_reports_not_vulnerable_for_benign_payload():
+    """``run()`` reports ``vulnerable=False`` with ``INFO`` severity for a
+    payload that does not contain the stub adapter's "bad" trigger word."""
     adapter = _EchoAdapter()
     executor = _StubExecutor()
 

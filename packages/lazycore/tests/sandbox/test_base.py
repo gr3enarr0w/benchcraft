@@ -15,6 +15,7 @@ from lazycore.sandbox.base import (
 
 
 def test_sandbox_policy_defaults_are_maximally_restrictive():
+    """A default-constructed SandboxPolicy denies network, reads, writes, and execs."""
     policy = SandboxPolicy()
     assert policy.allow_network is False
     assert policy.allowed_read_paths == ()
@@ -26,12 +27,14 @@ def test_sandbox_policy_defaults_are_maximally_restrictive():
 
 
 def test_sandbox_policy_is_frozen():
+    """Mutating a field on a constructed SandboxPolicy raises, per its frozen=True dataclass."""
     policy = SandboxPolicy()
     with pytest.raises(Exception):
         policy.allow_network = True  # type: ignore[misc]
 
 
 def test_sandbox_policy_with_overrides_returns_new_instance():
+    """with_overrides() returns a distinct copy with only the given fields changed, leaving the original untouched."""
     base = SandboxPolicy(allow_network=False)
     modified = base.with_overrides(allow_network=True)
 
@@ -41,6 +44,7 @@ def test_sandbox_policy_with_overrides_returns_new_instance():
 
 
 def test_sandbox_policy_generic_enough_for_two_different_mode_configs():
+    """The same SandboxPolicy dataclass can express both a LazyRed-style target policy and a differently-valued LazyAgent-style benchmark policy, with no module-specific fields."""
     # Simulates a LazyRed-style "red-team target sandbox" policy and a
     # LazyAgent-style "benchmark task sandbox" policy both being built from
     # the exact same SandboxPolicy dataclass with different values -- per
@@ -65,6 +69,7 @@ def test_sandbox_policy_generic_enough_for_two_different_mode_configs():
 
 
 def test_sandbox_result_succeeded_true_only_when_clean_exit():
+    """succeeded is True only for exit_code == 0 AND policy_blocked is False; either a nonzero exit or a blocked-but-zero-exit result is unsuccessful."""
     ok = SandboxResult(exit_code=0, stdout="hi", stderr="")
     assert ok.succeeded is True
 
@@ -78,17 +83,20 @@ def test_sandbox_result_succeeded_true_only_when_clean_exit():
 
 
 def test_sandbox_result_is_frozen():
+    """Mutating a field on a constructed SandboxResult raises, per its frozen=True dataclass."""
     result = SandboxResult(exit_code=0, stdout="", stderr="")
     with pytest.raises(Exception):
         result.exit_code = 1  # type: ignore[misc]
 
 
 def test_base_sandbox_executor_cannot_be_instantiated_directly():
+    """BaseSandboxExecutor is an ABC and cannot be instantiated without implementing its abstract methods."""
     with pytest.raises(TypeError):
         BaseSandboxExecutor()  # type: ignore[abstract]
 
 
 def test_base_sandbox_executor_subclass_must_implement_full_interface():
+    """A subclass implementing only is_available() (not run_command/run_callable) still cannot be instantiated."""
     class Incomplete(BaseSandboxExecutor):
         def is_available(self) -> bool:
             return True
@@ -98,6 +106,7 @@ def test_base_sandbox_executor_subclass_must_implement_full_interface():
 
 
 def test_minimal_concrete_executor_tracks_configured_policy():
+    """A full concrete executor exposes the policy passed at construction via .policy, and .configure() swaps it for a new one."""
     class NoOpExecutor(BaseSandboxExecutor):
         def is_available(self) -> bool:
             return True
@@ -118,6 +127,7 @@ def test_minimal_concrete_executor_tracks_configured_policy():
 
 
 def test_exception_hierarchy():
+    """SandboxBackendUnavailableError and SandboxPolicyViolationError are both SandboxError subclasses, which is itself a RuntimeError."""
     assert issubclass(SandboxBackendUnavailableError, SandboxError)
     assert issubclass(SandboxPolicyViolationError, SandboxError)
     assert issubclass(SandboxError, RuntimeError)

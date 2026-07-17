@@ -204,6 +204,17 @@ class PromptInjectionAdapter(BaseSecurityAdapter):
         secret: str = DEFAULT_SECRET,
         sandbox_policy: SandboxPolicy | None = None,
     ) -> None:
+        """Configure the protected secret and sandbox policy for this adapter.
+
+        Args:
+            secret: The fake secret :func:`naive_vulnerable_target` is told
+                to protect and :func:`detect_secret_leak` scans output for.
+                Defaults to :data:`DEFAULT_SECRET`.
+            sandbox_policy: The :class:`~lazycore.sandbox.SandboxPolicy` used
+                when invoking the target via ``run_target``. Defaults to
+                :func:`build_probe_sandbox_policy`'s maximally-restrictive
+                policy (no network, no filesystem writes, short timeout).
+        """
         self.secret = secret
         self.sandbox_policy = sandbox_policy or build_probe_sandbox_policy()
         self._tracer = get_tracer(__name__)

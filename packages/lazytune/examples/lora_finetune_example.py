@@ -32,6 +32,7 @@ TRAIN_STEPS = 25
 
 
 def main() -> None:
+    """Prepare a hermetic ProgrammaticAdapter, run real LoRA training steps, and report the loss before/after plus the saved adapter path."""
     print(f"Preparing ProgrammaticAdapter with a hermetic from-scratch base model")
     print(f"(no network access, no bundled checkpoint) over {len(DATASET)} training rows...")
     adapter = ProgrammaticAdapter(learning_rate=1e-2)

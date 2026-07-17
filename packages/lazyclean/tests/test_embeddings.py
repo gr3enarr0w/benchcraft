@@ -29,6 +29,8 @@ def test_no_pytorch_or_transformers_imported():
 
 
 def test_build_synthetic_embedding_onnx_writes_a_valid_model(tmp_path):
+    """build_synthetic_embedding_onnx() writes a valid, small (<100KB) .onnx
+    file to the requested path."""
     onnx_path = tmp_path / "tiny.onnx"
     result = build_synthetic_embedding_onnx(onnx_path, vocab_dim=64, embedding_dim=16, seed=1)
 
@@ -40,6 +42,8 @@ def test_build_synthetic_embedding_onnx_writes_a_valid_model(tmp_path):
 
 
 def test_build_synthetic_embedding_model_returns_working_embedding_model(tmp_path):
+    """build_synthetic_embedding_model() returns a ready-to-use EmbeddingModel
+    that embeds text rows into float32 vectors of the requested dimension."""
     model = build_synthetic_embedding_model(cache_dir=tmp_path, vocab_dim=64, embedding_dim=16)
 
     assert isinstance(model, EmbeddingModel)
@@ -51,6 +55,8 @@ def test_build_synthetic_embedding_model_returns_working_embedding_model(tmp_pat
 
 
 def test_embed_output_is_l2_normalized(tmp_path):
+    """The synthetic model's ONNX graph L2-normalizes its output, so every
+    embedded row has unit norm."""
     model = build_synthetic_embedding_model(cache_dir=tmp_path, vocab_dim=64, embedding_dim=16)
     embeddings = model.embed(["some sample text", "another distinct sample"])
     norms = np.linalg.norm(embeddings, axis=1)
@@ -58,6 +64,8 @@ def test_embed_output_is_l2_normalized(tmp_path):
 
 
 def test_embed_is_deterministic_across_calls(tmp_path):
+    """Embedding the same text twice through the same model produces
+    identical output arrays (no hidden randomness at inference time)."""
     model = build_synthetic_embedding_model(cache_dir=tmp_path, vocab_dim=64, embedding_dim=16)
     first = model.embed(["repeat this exact sentence"])
     second = model.embed(["repeat this exact sentence"])
@@ -65,12 +73,16 @@ def test_embed_is_deterministic_across_calls(tmp_path):
 
 
 def test_embed_empty_input_returns_empty_array(tmp_path):
+    """Embedding an empty list of texts returns a (0, embedding_dim) array
+    rather than raising or running the ONNX session."""
     model = build_synthetic_embedding_model(cache_dir=tmp_path, vocab_dim=64, embedding_dim=16)
     embeddings = model.embed([])
     assert embeddings.shape == (0, 16)
 
 
 def test_hashing_bag_of_words_vectorizer_is_deterministic_and_shaped():
+    """The hashing vectorizer produces a fixed-length vector and is
+    case-insensitive, so casing differences alone don't change the result."""
     vectorize = hashing_bag_of_words_vectorizer(vocab_dim=32)
     vec_a = vectorize("The Quick Brown Fox")
     vec_b = vectorize("the quick brown fox")  # case-insensitive tokenization
@@ -79,12 +91,16 @@ def test_hashing_bag_of_words_vectorizer_is_deterministic_and_shaped():
 
 
 def test_hashing_bag_of_words_vectorizer_empty_string_is_zero_vector():
+    """Whitespace-only text tokenizes to zero tokens, so the vectorizer
+    returns an all-zero vector rather than dividing by zero."""
     vectorize = hashing_bag_of_words_vectorizer(vocab_dim=16)
     vec = vectorize("   ")
     np.testing.assert_array_equal(vec, np.zeros(16, dtype=np.float32))
 
 
 def test_recommended_model_registered_as_tier_1():
+    """The recommended production checkpoint is registered in MODEL_ALLOWLIST
+    as Tier 1 / Apache-2.0, so it is auto-usable without an opt-in flag."""
     entry = MODEL_ALLOWLIST.get(RECOMMENDED_MODEL_NAME)
     assert entry is not None
     assert entry.tier is ModelTier.TIER_1
@@ -92,6 +108,8 @@ def test_recommended_model_registered_as_tier_1():
 
 
 def test_from_onnx_file_infers_input_output_names(tmp_path):
+    """EmbeddingModel.from_onnx_file() infers the input/output tensor names
+    from the ONNX graph itself when they aren't passed explicitly."""
     onnx_path = build_synthetic_embedding_onnx(
         tmp_path / "infer_names.onnx", vocab_dim=32, embedding_dim=8
     )

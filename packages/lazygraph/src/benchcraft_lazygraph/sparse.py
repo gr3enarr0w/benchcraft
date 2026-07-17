@@ -66,6 +66,32 @@ class PyGSparseAdapter(SparseGraphTensorAdapter):
         edge_weight: "torch.Tensor | None" = None,
         scipy_matrix: sp.spmatrix | None = None,
     ) -> None:
+        """Construct an adapter directly in a given format.
+
+        Prefer :meth:`from_edge_index` for the common COO-construction
+        case; this constructor is also used internally by :meth:`to_coo`,
+        :meth:`to_csr`, and :meth:`to_csc` to build the converted instance.
+
+        Args:
+            shape: Dense ``(num_rows, num_cols)`` shape of the adjacency
+                matrix represented by this adapter.
+            native_format: One of ``SparseFormat.COO``/``CSR``/``CSC``,
+                identifying which backing representation is populated.
+            edge_index: PyG-style ``[2, num_edges]`` COO edge index.
+                Required (and only meaningful) when ``native_format`` is
+                ``SparseFormat.COO``.
+            edge_weight: Optional per-edge weights aligned with
+                ``edge_index``; unweighted COO graphs are treated as
+                all-ones weights.
+            scipy_matrix: A ``scipy.sparse`` matrix already in CSR or CSC
+                format. Required (and only meaningful) when
+                ``native_format`` is ``SparseFormat.CSR``/``CSC``.
+
+        Raises:
+            ValueError: If ``native_format`` is unrecognized, or if the
+                format-specific required data (``edge_index`` for COO,
+                ``scipy_matrix`` for CSR/CSC) is missing.
+        """
         if native_format not in (SparseFormat.COO, SparseFormat.CSR, SparseFormat.CSC):
             raise ValueError(f"Unknown sparse format: {native_format!r}")
         if native_format == SparseFormat.COO and edge_index is None:
@@ -111,10 +137,18 @@ class PyGSparseAdapter(SparseGraphTensorAdapter):
 
     @property
     def native_format(self) -> str:
+        """Which backing representation this adapter currently holds.
+
+        One of ``SparseFormat.COO``, ``SparseFormat.CSR``, or
+        ``SparseFormat.CSC``. Changes across calls to :meth:`to_coo`,
+        :meth:`to_csr`, or :meth:`to_csc`, each of which returns a new
+        adapter instance rather than mutating this one in place.
+        """
         return self._native_format
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Dense ``(num_rows, num_cols)`` shape of the adjacency matrix."""
         return self._shape
 
     @property

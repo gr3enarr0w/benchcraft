@@ -185,9 +185,35 @@ class SandboxedAgentAdapter(AgentAdapter):
     """
 
     def __init__(self, agent_fn: AgentFn) -> None:
+        """Wrap ``agent_fn`` -- the "bring your own agent" callable to drive.
+
+        Args:
+            agent_fn: a callable matching :data:`AgentFn` (task in, action
+                out). Stored as-is; not validated or wrapped further, so any
+                exception it raises during :meth:`run_task` propagates
+                unchanged to the caller (`benchcraft_lazyagent.benchmark.run_task`
+                is what converts such exceptions into a failed result).
+        """
         self._agent_fn = agent_fn
 
     def run_task(self, task: TaskSpec, executor: BaseSandboxExecutor) -> AgentTrajectory:
+        """Ask ``agent_fn`` for one action, run it in ``executor``, and record the trajectory.
+
+        Builds a three-step :class:`AgentTrajectory` -- a ``user`` step with
+        the task description, an ``assistant`` step with the chosen action's
+        command/rationale, and a ``tool`` step with the real
+        `lazycore.sandbox.SandboxResult` (exit code, whether the policy
+        blocked it, stdout/stderr) -- regardless of whether the sandboxed
+        command actually succeeded. Scoring the outcome is the caller's
+        responsibility (see `benchcraft_lazyagent.tasks.score_file_task`),
+        not this method's.
+
+        Args:
+            task: the task to attempt.
+            executor: the sandbox executor to run the agent's chosen
+                command through, per :meth:`AgentAdapter.run_task`'s
+                contract.
+        """
         steps: list[TrajectoryStep] = [
             TrajectoryStep(role="user", content=task.description)
         ]

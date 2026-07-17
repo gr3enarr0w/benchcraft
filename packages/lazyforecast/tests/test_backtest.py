@@ -19,6 +19,13 @@ from benchcraft_lazyforecast import (
 
 
 def _make_synthetic_panel(n_points: int = 120, seed: int = 42) -> pd.DataFrame:
+    """Build the same two-series sine-wave-plus-trend panel used in test_forecast.py.
+
+    "series_a" and "series_b" each get a distinct trend slope, seasonal
+    amplitude/phase, and level, plus small Gaussian noise, over `n_points`
+    daily observations with a 7-day season -- reused here (rather than
+    imported) so this test module stays self-contained.
+    """
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2024-01-01", periods=n_points, freq="D")
     t = np.arange(n_points)
@@ -40,10 +47,12 @@ def _make_synthetic_panel(n_points: int = 120, seed: int = 42) -> pd.DataFrame:
 
 @pytest.fixture(scope="module")
 def synthetic_panel() -> pd.DataFrame:
+    """Module-scoped synthetic two-series panel, built once and shared across tests."""
     return _make_synthetic_panel()
 
 
 def test_backtest_returns_metric_per_series_and_model(synthetic_panel: pd.DataFrame) -> None:
+    """backtest() must return one SeriesMetric per (series, model) pair with finite, non-negative errors."""
     config = ForecastConfig(horizon=14, freq="D", season_length=7, models=("AutoARIMA",))
     report = backtest(synthetic_panel, config, test_size=14)
 
@@ -83,6 +92,7 @@ def test_backtest_mean_metrics_below_sanity_threshold(synthetic_panel: pd.DataFr
 
 
 def test_backtest_to_frame_shape(synthetic_panel: pd.DataFrame) -> None:
+    """BacktestReport.to_frame() must expose the documented columns with one row per (series, model)."""
     config = ForecastConfig(horizon=10, freq="D", season_length=7, models=("AutoARIMA", "AutoETS"))
     report = backtest(synthetic_panel, config, test_size=10)
 
@@ -101,6 +111,7 @@ def test_backtest_to_frame_shape(synthetic_panel: pd.DataFrame) -> None:
 
 
 def test_backtest_raises_when_series_too_short() -> None:
+    """backtest() must raise ValueError when a series has fewer observations than test_size + 1."""
     dates = pd.date_range("2024-01-01", periods=5, freq="D")
     tiny = pd.DataFrame({"unique_id": "only_series", "ds": dates, "y": [1.0, 2.0, 3.0, 4.0, 5.0]})
     config = ForecastConfig(models=("AutoARIMA",))
@@ -109,6 +120,7 @@ def test_backtest_raises_when_series_too_short() -> None:
 
 
 def test_backtest_mean_mae_raises_for_unknown_model(synthetic_panel: pd.DataFrame) -> None:
+    """BacktestReport.mean_mae() must raise ValueError when filtered to a model absent from the report."""
     config = ForecastConfig(horizon=7, season_length=7, models=("AutoARIMA",))
     report = backtest(synthetic_panel, config, test_size=7)
     with pytest.raises(ValueError, match="No backtest metrics"):

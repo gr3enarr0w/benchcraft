@@ -37,10 +37,13 @@ ROWS = [
 
 @pytest.fixture()
 def model(tmp_path):
+    """Build a small synthetic ONNX embedding model, cached under ``tmp_path``."""
     return build_synthetic_embedding_model(cache_dir=tmp_path, vocab_dim=128, embedding_dim=32)
 
 
 def test_cosine_similarity_matrix_shape_and_diagonal():
+    """A cosine-similarity matrix is (n, n), has a unit diagonal, and rates
+    identical vectors as similarity 1.0 and orthogonal vectors as 0.0."""
     embeddings = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
     sims = cosine_similarity_matrix(embeddings)
     assert sims.shape == (3, 3)
@@ -83,6 +86,9 @@ def test_cosine_similarity_matrix_zero_vectors_are_self_similar_and_mutually_dup
 
 
 def test_find_near_duplicates_flags_identical_zero_vector_rows():
+    """find_near_duplicates() flags two identical all-zero embedding rows as
+    a duplicate pair with similarity 1.0, without sweeping in a distinct
+    non-zero row."""
     embeddings = np.array(
         [
             [0.0, 0.0, 0.0],
@@ -104,11 +110,13 @@ def test_find_near_duplicates_flags_identical_zero_vector_rows():
 
 
 def test_cosine_similarity_matrix_rejects_non_2d_input():
+    """A 1-D array (not an (n_rows, dim) matrix) raises ValueError."""
     with pytest.raises(ValueError):
         cosine_similarity_matrix(np.zeros(5, dtype=np.float32))
 
 
 def test_find_near_duplicates_rejects_bad_threshold():
+    """Thresholds outside the valid (0.0, 1.0] range raise ValueError."""
     embeddings = np.eye(2, dtype=np.float32)
     with pytest.raises(ValueError):
         find_near_duplicates(embeddings, threshold=0.0)
@@ -117,6 +125,8 @@ def test_find_near_duplicates_rejects_bad_threshold():
 
 
 def test_find_near_duplicates_flags_the_near_duplicate_pair(model):
+    """End-to-end via the synthetic model: the near-duplicate ROWS[0]/ROWS[1]
+    pair is flagged above threshold, and the unrelated ROWS[2] is not."""
     embeddings = model.embed(ROWS)
     report = find_near_duplicates(embeddings, threshold=NEAR_DUP_THRESHOLD)
 
@@ -135,6 +145,8 @@ def test_find_near_duplicates_flags_the_near_duplicate_pair(model):
 
 
 def test_dedup_report_pairs_sorted_by_descending_similarity(model):
+    """DedupReport.pairs is sorted by descending similarity, most-similar
+    pair first."""
     embeddings = model.embed(ROWS + ["the quick brown fox jumps over the lazy dog"])
     report = find_near_duplicates(embeddings, threshold=0.1)
     similarities = [pair.similarity for pair in report.pairs]
@@ -142,6 +154,9 @@ def test_dedup_report_pairs_sorted_by_descending_similarity(model):
 
 
 def test_detect_near_duplicate_text_end_to_end(model):
+    """detect_near_duplicate_text() embeds plain string rows and returns
+    both the embeddings and a report flagging the expected near-duplicate
+    pair."""
     embeddings, report = detect_near_duplicate_text(ROWS, model, threshold=NEAR_DUP_THRESHOLD)
     assert embeddings.shape == (3, model.embedding_dim)
     assert {0, 1}.issubset(report.flagged_indices())
@@ -149,6 +164,9 @@ def test_detect_near_duplicate_text_end_to_end(model):
 
 
 def test_detect_near_duplicate_text_accepts_arrow_backed_pandas_series(model):
+    """detect_near_duplicate_text() accepts a Tier-1 Arrow-backed pandas
+    Series (ArrowDtype) directly, without needing to convert to a plain
+    list first."""
     pd = pytest.importorskip("pandas")
     series = pd.Series(ROWS).convert_dtypes(dtype_backend="pyarrow")
     embeddings, report = detect_near_duplicate_text(series, model, threshold=NEAR_DUP_THRESHOLD)
@@ -180,6 +198,8 @@ def test_detect_near_duplicate_text_flags_empty_and_whitespace_only_text_as_dupl
 
 
 def test_duplicate_pair_is_frozen_dataclass():
+    """DuplicatePair is immutable: assigning to a field after construction
+    raises."""
     pair = DuplicatePair(index_a=0, index_b=1, similarity=0.99)
     with pytest.raises(Exception):
         pair.similarity = 0.5  # type: ignore[misc]

@@ -25,12 +25,16 @@ from benchcraft_lazyvision import (
 
 @pytest.fixture()
 def small_model_and_config() -> tuple[torch.nn.Module, ModelConfig]:
+    """A small, deterministically-initialized TinyCNN (16x16 input, 4
+    classes) shared by this module's tests, kept small purely to keep
+    `torch.export`/ONNX export fast."""
     config = ModelConfig(in_channels=3, image_size=16, num_classes=4)
     model = build_model(config, seed=0, device="cpu")
     return model, config
 
 
 def test_export_to_onnx_writes_a_file(tmp_path, small_model_and_config) -> None:
+    """export_to_onnx() must write a non-empty .onnx file to the given path."""
     model, config = small_model_and_config
     example_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1)
     onnx_path = tmp_path / "tiny_cnn.onnx"
@@ -44,6 +48,8 @@ def test_export_to_onnx_writes_a_file(tmp_path, small_model_and_config) -> None:
 def test_exported_onnx_matches_pytorch_on_training_input(
     tmp_path, small_model_and_config
 ) -> None:
+    """verify_export() must report a match when run on the exact same
+    example input that was used to trace the export."""
     model, config = small_model_and_config
     example_input, _ = synthetic_classification_batch(config, batch_size=2, seed=1)
     onnx_path = tmp_path / "tiny_cnn.onnx"

@@ -125,6 +125,7 @@ def test_classify_denial_still_flags_denial_when_reads_are_restricted():
 
 
 def test_symlinked_allowed_write_path_pointing_at_root_is_rejected():
+    """An allowed_write_paths entry that is a symlink resolving to "/" is rejected at profile-build time rather than silently granting root-wide write access."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         evil_link = Path(tmp_dir) / "looks-scoped-but-is-not"
         evil_link.symlink_to("/")
@@ -135,6 +136,7 @@ def test_symlinked_allowed_write_path_pointing_at_root_is_rejected():
 
 
 def test_symlinked_allowed_read_path_pointing_at_home_dir_is_rejected():
+    """An allowed_read_paths entry that is a symlink resolving to the user's home directory is rejected rather than silently widening the read scope."""
     home = Path.home()
     with tempfile.TemporaryDirectory() as tmp_dir:
         evil_link = Path(tmp_dir) / "looks-scoped-but-is-not"
@@ -146,6 +148,7 @@ def test_symlinked_allowed_read_path_pointing_at_home_dir_is_rejected():
 
 
 def test_directly_specifying_a_broad_system_directory_is_also_rejected():
+    """Passing a suspiciously broad system path (e.g. "/etc") directly, with no symlink involved, is also rejected by build_sbpl_profile()."""
     # Not even a symlink -- the finding's fix also protects a caller who
     # directly (mistakenly) passes a suspiciously broad path.
     policy = SandboxPolicy(allowed_write_paths=("/etc",))
@@ -154,6 +157,7 @@ def test_directly_specifying_a_broad_system_directory_is_also_rejected():
 
 
 def test_legitimate_tmp_symlink_is_not_rejected():
+    """The benign OS-provided "/tmp" -> "/private/tmp" symlink is still accepted and included in the generated profile, unaffected by the anti-widening check."""
     # /tmp -> /private/tmp on macOS is the canonical benign OS-provided
     # symlink this fix must NOT break (see _canonical's original docstring
     # and _reject_overbroad_allowed_path's docstring).
@@ -163,6 +167,7 @@ def test_legitimate_tmp_symlink_is_not_rejected():
 
 
 def test_ordinary_scoped_subdirectory_is_not_rejected():
+    """A normal, non-symlinked, non-root project subdirectory resolves and appears in the generated profile without triggering the overbroad-path rejection."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         scoped = Path(tmp_dir) / "project-workspace"
         scoped.mkdir()
@@ -177,27 +182,32 @@ def test_ordinary_scoped_subdirectory_is_not_rejected():
 
 
 def test_relative_allowed_write_path_raises_immediately_at_construction():
+    """A relative allowed_write_paths entry raises ValueError at SandboxPolicy construction time, not later at run_command() call time."""
     with pytest.raises(ValueError, match="absolute"):
         SandboxPolicy(allowed_write_paths=("relative/write/path",))
 
 
 def test_relative_allowed_read_path_raises_immediately_at_construction():
+    """A relative allowed_read_paths entry raises ValueError at SandboxPolicy construction time."""
     with pytest.raises(ValueError, match="absolute"):
         SandboxPolicy(allowed_read_paths=("relative/read/path",))
 
 
 def test_relative_working_directory_raises_immediately_at_construction():
+    """A relative working_directory value raises ValueError at SandboxPolicy construction time."""
     with pytest.raises(ValueError, match="absolute"):
         SandboxPolicy(working_directory="relative/dir")
 
 
 def test_with_overrides_also_rejects_relative_paths():
+    """with_overrides() re-runs the same absolute-path validation as normal construction, so it also rejects a relative override."""
     base = SandboxPolicy()
     with pytest.raises(ValueError, match="absolute"):
         base.with_overrides(allowed_write_paths=("relative/path",))
 
 
 def test_bare_executable_name_is_still_accepted_non_absolute():
+    """allowed_executables accepts bare, PATH-resolved command names (unlike the read/write/working-directory fields), unaffected by the absolute-path requirement."""
     # allowed_executables is documented to accept bare PATH-resolved names
     # -- this must remain unaffected by the Finding-3 fix.
     policy = SandboxPolicy(allowed_executables=("python3", "/usr/bin/env"))
@@ -205,6 +215,7 @@ def test_bare_executable_name_is_still_accepted_non_absolute():
 
 
 def test_absolute_paths_still_construct_normally():
+    """Absolute paths for allowed_write_paths, allowed_read_paths, and working_directory all construct a SandboxPolicy without raising."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         policy = SandboxPolicy(
             allowed_write_paths=(tmp_dir,),

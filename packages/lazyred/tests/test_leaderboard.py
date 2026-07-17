@@ -52,6 +52,9 @@ class _ContainsBadAdapter(BaseSecurityAdapter):
 
 
 def test_run_leaderboard_aggregates_mixed_pass_fail():
+    """With 2 of 4 payloads containing "bad", ``run_leaderboard`` produces a
+    report with the correct total/vulnerable/resisted counts and a 50%
+    failure rate / 50% pass rate."""
     adapter = _ContainsBadAdapter()
     executor = _NoOpExecutor()
     payloads = ["good one", "a bad payload", "another good one", "so bad"]
@@ -68,6 +71,8 @@ def test_run_leaderboard_aggregates_mixed_pass_fail():
 
 
 def test_run_leaderboard_all_pass():
+    """When no payload contains the "bad" trigger, the report shows zero
+    vulnerable attempts, 0% failure rate, and 100% pass rate."""
     adapter = _ContainsBadAdapter()
     executor = _NoOpExecutor()
     payloads = ["fine", "also fine", "still fine"]
@@ -80,6 +85,8 @@ def test_run_leaderboard_all_pass():
 
 
 def test_run_leaderboard_all_fail():
+    """When every payload contains the "bad" trigger, the report shows all
+    attempts vulnerable, 100% failure rate, and 0% pass rate."""
     adapter = _ContainsBadAdapter()
     executor = _NoOpExecutor()
     payloads = ["bad", "so bad", "extremely bad"]
@@ -92,6 +99,11 @@ def test_run_leaderboard_all_fail():
 
 
 def test_run_leaderboard_empty_payloads_does_not_error():
+    """Running the leaderboard with an empty payload list does not raise a
+    division error; it returns a valid, empty report with 0% failure rate
+    and 100% pass rate (per ``LeaderboardReport``'s documented convention
+    for the zero-attempts case) while still reporting the adapter's
+    ``probe_id``."""
     adapter = _ContainsBadAdapter()
     executor = _NoOpExecutor()
 
@@ -105,6 +117,9 @@ def test_run_leaderboard_empty_payloads_does_not_error():
 
 
 def test_format_summary_contains_key_fields():
+    """``format_summary()`` renders a human-readable report that includes
+    the probe id, the total attempt count, per-attempt VULNERABLE/resisted
+    verdicts, and the OWASP mapping ("LLM01")."""
     adapter = _ContainsBadAdapter()
     executor = _NoOpExecutor()
     report = run_leaderboard(adapter, executor, ["bad", "good"])

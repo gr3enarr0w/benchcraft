@@ -89,11 +89,13 @@ def _load_nile_annual_panel() -> pd.DataFrame:
 
 @pytest.fixture(scope="module")
 def co2_panel() -> pd.DataFrame:
+    """Module-scoped real Mauna Loa CO2 monthly panel, loaded once and shared across co2 tests."""
     return _load_co2_monthly_panel()
 
 
 @pytest.fixture(scope="module")
 def nile_panel() -> pd.DataFrame:
+    """Module-scoped real Nile annual flow panel, loaded once and shared across nile tests."""
     return _load_nile_annual_panel()
 
 
@@ -123,6 +125,7 @@ def test_co2_validate_input_and_prepare_frame_reuse_existing_helpers(co2_panel: 
 
 
 def test_co2_forecast_shape_and_finiteness(co2_panel: pd.DataFrame) -> None:
+    """forecast() on the real co2 series must produce finite, physically-plausible values (positive, not wildly above history)."""
     config = ForecastConfig(horizon=12, freq="MS", season_length=12, models=("AutoARIMA", "AutoETS"))
     result = forecast(co2_panel, config)
 
@@ -161,12 +164,14 @@ def test_co2_backtest_error_is_small_relative_to_series_scale(co2_panel: pd.Data
 
 
 def test_nile_dataset_loads_locally_with_expected_schema(nile_panel: pd.DataFrame) -> None:
+    """Sanity-check the reshaped real Nile dataset's shape/columns before running it through the package."""
     assert list(nile_panel.columns) == ["unique_id", "ds", "y"]
     assert len(nile_panel) == 100  # 1871-1970 inclusive
     assert np.isfinite(nile_panel["y"].to_numpy()).all()
 
 
 def test_nile_forecast_shape_and_finiteness(nile_panel: pd.DataFrame) -> None:
+    """forecast() on the real, non-seasonal, structurally-broken Nile series must still produce finite values."""
     config = ForecastConfig(horizon=10, freq="YS", season_length=1, models=("AutoARIMA", "AutoETS"))
     result = forecast(nile_panel, config)
 

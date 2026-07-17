@@ -60,6 +60,17 @@ class TinyCNN(nn.Module):
     """
 
     def __init__(self, config: ModelConfig | None = None) -> None:
+        """Build the conv/pool/linear layers for the given ``config``.
+
+        Args:
+            config: Shape configuration (input channels, image size, number
+                of output classes). Defaults to ``ModelConfig()``.
+
+        Raises:
+            ValueError: ``config.image_size`` is too small for two 2x2
+                max-pools to leave at least a 1x1 feature map (i.e. less
+                than 4).
+        """
         super().__init__()
         self.config = config or ModelConfig()
 
@@ -79,6 +90,15 @@ class TinyCNN(nn.Module):
         self.fc = nn.Linear(16 * reduced * reduced, self.config.num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the two conv+relu+pool blocks and the linear head.
+
+        Args:
+            x: Input batch of shape ``(N, in_channels, image_size,
+                image_size)``, float32.
+
+        Returns:
+            Unnormalized class logits of shape ``(N, num_classes)``.
+        """
         x = self.pool(self.relu(self.conv1(x)))
         x = self.pool(self.relu(self.conv2(x)))
         x = torch.flatten(x, start_dim=1)

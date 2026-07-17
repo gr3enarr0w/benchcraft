@@ -223,9 +223,13 @@ class _SupportsDLPack(Protocol):
     protocol, without lazycore needing to depend on torch/numpy to say so.
     """
 
-    def __dlpack__(self, stream: Any | None = ...) -> Any: ...  # pragma: no cover
+    def __dlpack__(self, stream: Any | None = ...) -> Any:
+        """Export this tensor via the DLPack protocol for zero-copy handoff."""
+        ...  # pragma: no cover
 
-    def __dlpack_device__(self) -> tuple[int, int]: ...  # pragma: no cover
+    def __dlpack_device__(self) -> tuple[int, int]:
+        """Return the ``(device_type, device_id)`` pair per the DLPack spec."""
+        ...  # pragma: no cover
 
 
 class DenseMediaPipeline(abc.ABC):

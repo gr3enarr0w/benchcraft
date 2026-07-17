@@ -82,6 +82,12 @@ def build_real_co2_panel() -> pd.DataFrame:
 
 
 def main() -> None:
+    """Run the full synthetic-then-real demo: validate, forecast, backtest, and print a side-by-side summary.
+
+    Section 1 runs entirely on the synthetic seasonal panel. Section 2 repeats
+    the same sequence against the real co2 dataset and is skipped (with a
+    message) if the optional `dev` extra (`statsmodels`) isn't installed.
+    """
     panel = build_synthetic_seasonal_panel()
 
     print("=== Section 1: synthetic seasonal panel ===")

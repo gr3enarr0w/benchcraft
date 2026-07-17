@@ -31,12 +31,14 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture()
 def executor() -> BaseSandboxExecutor:
+    """The real default (Seatbelt) sandbox executor, asserted available."""
     ex = get_default_executor()
     assert ex.is_available(), "expected the real Seatbelt backend to be available on macOS"
     return ex
 
 
 def test_sandboxed_agent_adapter_returns_trajectory_with_three_steps(executor, tmp_path: Path):
+    """A run produces exactly one user/assistant/tool step, in that order."""
     task = make_pass_task(tmp_path)
     adapter = SandboxedAgentAdapter(rule_based_agent)
 
@@ -51,6 +53,9 @@ def test_sandboxed_agent_adapter_returns_trajectory_with_three_steps(executor, t
 
 
 def test_sandboxed_agent_adapter_actually_executes_via_sandbox_result(executor, tmp_path: Path):
+    """A pass-designed task's command is really executed by the sandbox: it
+    exits 0, is not policy-blocked, and the target file actually exists on
+    disk afterward -- not just a stubbed/fabricated result."""
     task = make_pass_task(tmp_path)
     adapter = SandboxedAgentAdapter(rule_based_agent)
 

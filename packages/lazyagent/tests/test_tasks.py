@@ -31,12 +31,16 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture()
 def executor():
+    """The real default (Seatbelt) sandbox executor, asserted available."""
     ex = get_default_executor()
     assert ex.is_available()
     return ex
 
 
 def test_pass_task_creates_expected_file_and_scores_success(executor, tmp_path: Path):
+    """Running the pass-designed task end-to-end creates the target file
+    with the exact expected content, and `score_file_task` scores it as a
+    success."""
     task = make_pass_task(tmp_path)
     adapter = SandboxedAgentAdapter(rule_based_agent)
 
@@ -78,6 +82,8 @@ def test_fail_task_is_genuinely_blocked_by_the_sandbox_not_just_scored_false(
 
 
 def test_default_task_suite_has_one_pass_and_one_fail_designed_task(tmp_path: Path):
+    """`default_task_suite` always returns exactly two tasks: one with
+    `expect_success=True` and one with `expect_success=False`."""
     suite = default_task_suite(tmp_path)
 
     assert len(suite) == 2
@@ -86,6 +92,9 @@ def test_default_task_suite_has_one_pass_and_one_fail_designed_task(tmp_path: Pa
 
 
 def test_score_file_task_rejects_non_file_task_spec():
+    """`score_file_task` raises TypeError when given a plain `TaskSpec`
+    rather than the `FileTaskSpec` subclass it requires to read
+    `target_path`/`expected_content` off of."""
     from benchcraft_lazyagent.adapter import AgentTrajectory, TaskSpec
     from lazycore.sandbox import SandboxPolicy, SandboxResult
 

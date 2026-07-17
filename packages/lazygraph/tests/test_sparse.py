@@ -25,6 +25,7 @@ EDGES = [
 
 
 def _make_adapter() -> PyGSparseAdapter:
+    """Build the module's fixed COO-native ring-plus-chords `PyGSparseAdapter`."""
     src = [e[0] for e in EDGES]
     dst = [e[1] for e in EDGES]
     edge_index = torch.tensor([src, dst], dtype=torch.long)
@@ -32,6 +33,7 @@ def _make_adapter() -> PyGSparseAdapter:
 
 
 def _expected_dense() -> np.ndarray:
+    """Build the dense adjacency matrix that `EDGES` is expected to produce."""
     dense = np.zeros((NUM_NODES, NUM_NODES), dtype=np.float32)
     for s, d in EDGES:
         dense[s, d] = 1.0
@@ -39,17 +41,20 @@ def _expected_dense() -> np.ndarray:
 
 
 def test_is_concrete_subclass_of_lazycore_adapter():
+    """`PyGSparseAdapter` must be a real subclass of the lazycore abstract adapter."""
     adapter = _make_adapter()
     assert isinstance(adapter, SparseGraphTensorAdapter)
 
 
 def test_native_format_and_shape_on_construction():
+    """A freshly constructed adapter reports COO format and the expected dense shape."""
     adapter = _make_adapter()
     assert adapter.native_format == SparseFormat.COO
     assert adapter.shape == (NUM_NODES, NUM_NODES)
 
 
 def test_coo_round_trip_matches_expected_dense():
+    """Calling `.to_coo()` on an already-COO adapter preserves the correct structure."""
     adapter = _make_adapter()
     coo_adapter = adapter.to_coo()
     assert coo_adapter.native_format == SparseFormat.COO
@@ -57,6 +62,7 @@ def test_coo_round_trip_matches_expected_dense():
 
 
 def test_csr_conversion_matches_expected_dense():
+    """`.to_csr()` produces a real `scipy.sparse.csr_matrix` with correct structure."""
     adapter = _make_adapter()
     csr_adapter = adapter.to_csr()
     assert csr_adapter.native_format == SparseFormat.CSR
@@ -68,6 +74,7 @@ def test_csr_conversion_matches_expected_dense():
 
 
 def test_csc_conversion_matches_expected_dense():
+    """`.to_csc()` produces a real `scipy.sparse.csc_matrix` with correct structure."""
     adapter = _make_adapter()
     csc_adapter = adapter.to_csc()
     assert csc_adapter.native_format == SparseFormat.CSC
@@ -78,6 +85,7 @@ def test_csc_conversion_matches_expected_dense():
 
 
 def test_csr_to_coo_round_trip_preserves_structure():
+    """Converting CSR back to COO reconstructs the original adjacency structure."""
     adapter = _make_adapter()
     csr_adapter = adapter.to_csr()
     back_to_coo = csr_adapter.to_coo()
@@ -86,6 +94,7 @@ def test_csr_to_coo_round_trip_preserves_structure():
 
 
 def test_csc_to_coo_round_trip_preserves_structure():
+    """Converting CSC back to COO reconstructs the original adjacency structure."""
     adapter = _make_adapter()
     csc_adapter = adapter.to_csc()
     back_to_coo = csc_adapter.to_coo()
@@ -94,6 +103,7 @@ def test_csc_to_coo_round_trip_preserves_structure():
 
 
 def test_all_three_formats_agree_on_dense_reconstruction():
+    """COO, CSR, and CSC conversions of the same adapter all yield an identical dense matrix."""
     adapter = _make_adapter()
     dense_coo = adapter.to_coo().to_dense_numpy()
     dense_csr = adapter.to_csr().to_dense_numpy()
@@ -103,12 +113,14 @@ def test_all_three_formats_agree_on_dense_reconstruction():
 
 
 def test_invalid_edge_index_shape_rejected():
+    """`from_edge_index` raises `ValueError` for an edge_index that isn't shape `[2, num_edges]`."""
     bad_edge_index = torch.tensor([0, 1, 2], dtype=torch.long)
     with pytest.raises(ValueError):
         PyGSparseAdapter.from_edge_index(bad_edge_index, num_nodes=NUM_NODES)
 
 
 def test_edge_index_accessor_requires_coo_format():
+    """Accessing `.edge_index` on a CSR-backed adapter raises `RuntimeError`."""
     adapter = _make_adapter()
     csr_adapter = adapter.to_csr()
     with pytest.raises(RuntimeError):
@@ -116,6 +128,7 @@ def test_edge_index_accessor_requires_coo_format():
 
 
 def test_scipy_matrix_accessor_requires_csr_or_csc_format():
+    """Accessing `.scipy_matrix` on a COO-backed adapter raises `RuntimeError`."""
     adapter = _make_adapter()
     with pytest.raises(RuntimeError):
         _ = adapter.scipy_matrix

@@ -33,10 +33,13 @@ class LeaderboardReport:
 
     @property
     def total_attempts(self) -> int:
+        """Number of findings aggregated into this report (one per payload run)."""
         return len(self.findings)
 
     @property
     def vulnerable_count(self) -> int:
+        """Number of attempts where the target was genuinely vulnerable
+        (i.e. :attr:`Finding.vulnerable` is ``True``)."""
         return sum(1 for finding in self.findings if finding.vulnerable)
 
     @property

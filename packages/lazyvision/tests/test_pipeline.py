@@ -42,6 +42,9 @@ def _make_raw_image_bytes(
 
 
 def test_pipeline_is_a_dense_media_pipeline_subclass() -> None:
+    """SimpleImagePipeline must be a real subclass of
+    `lazycore.data.DenseMediaPipeline`, not a parallel interface, per
+    CLAUDE.md's "fix what's there, don't duplicate" rule."""
     # Per CLAUDE.md's "fix what's there, don't duplicate" rule: this must
     # be a real subclass of lazycore.data.DenseMediaPipeline, not a
     # parallel interface.
@@ -50,6 +53,8 @@ def test_pipeline_is_a_dense_media_pipeline_subclass() -> None:
 
 
 def test_decode_returns_rgb_pil_image() -> None:
+    """decode() must convert a non-RGB source (grayscale) to a 3-channel
+    RGB PIL Image while preserving the original pixel dimensions."""
     pipeline = SimpleImagePipeline()
     raw = _make_raw_image_bytes(size=(16, 20), mode="L")  # grayscale source
     decoded = pipeline.decode(raw)
@@ -59,6 +64,8 @@ def test_decode_returns_rgb_pil_image() -> None:
 
 
 def test_augment_resizes_to_configured_size() -> None:
+    """augment() must resize a non-square source image to the square
+    ``config.image_size`` regardless of the source's original dimensions."""
     config = PipelineConfig(image_size=24, horizontal_flip_prob=0.0)
     pipeline = SimpleImagePipeline(config)
     raw = _make_raw_image_bytes(size=(16, 20))
@@ -68,6 +75,9 @@ def test_augment_resizes_to_configured_size() -> None:
 
 
 def test_augment_flip_is_deterministic_under_seed() -> None:
+    """With a fixed seed, horizontal_flip_prob=1.0 must always flip the
+    image and horizontal_flip_prob=0.0 must never flip it -- augmentation
+    is not left to unseeded randomness."""
     raw = _make_raw_image_bytes(size=(16, 16))
 
     # flip_prob=1.0 must always flip.
@@ -90,6 +100,8 @@ def test_augment_flip_is_deterministic_under_seed() -> None:
 
 
 def test_to_dense_tensor_shape_dtype_and_range() -> None:
+    """to_dense_tensor() must produce a ``(C, H, W)`` float32 tensor with
+    all values normalized into the ``[0, 1]`` range."""
     config = PipelineConfig(image_size=32, horizontal_flip_prob=0.0)
     pipeline = SimpleImagePipeline(config)
     raw = _make_raw_image_bytes(size=(32, 32))
@@ -104,6 +116,10 @@ def test_to_dense_tensor_shape_dtype_and_range() -> None:
 
 
 def test_to_dense_tensor_satisfies_dlpack_protocol() -> None:
+    """The pipeline's output must expose ``__dlpack__``/
+    ``__dlpack_device__`` (torch.Tensor implements this natively), so a
+    future change to to_dense_tensor's return type can't silently break
+    the Tier-3 DLPack-handoff contract without this test failing."""
     # lazycore.data.DenseMediaPipeline.to_dense_tensor's contract requires
     # the return value to support the DLPack protocol. torch.Tensor
     # implements this natively; assert it explicitly so a future change to
@@ -119,6 +135,9 @@ def test_to_dense_tensor_satisfies_dlpack_protocol() -> None:
 
 
 def test_run_driver_matches_manual_composition() -> None:
+    """The inherited `DenseMediaPipeline.run` driver must produce the exact
+    same tensor as manually chaining decode -> augment -> to_dense_tensor,
+    for a fresh pipeline instance with matching config/seed."""
     config = PipelineConfig(image_size=28, horizontal_flip_prob=0.0, seed=42)
     pipeline = SimpleImagePipeline(config)
     raw = _make_raw_image_bytes(size=(28, 28))
@@ -135,6 +154,8 @@ def test_run_driver_matches_manual_composition() -> None:
 
 
 def test_decode_rejects_garbage_bytes() -> None:
+    """decode() must raise rather than silently return a bogus image when
+    handed bytes that are not a valid encoded image."""
     pipeline = SimpleImagePipeline()
     with pytest.raises(Exception):
         pipeline.decode(b"not an image")

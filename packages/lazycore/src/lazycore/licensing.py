@@ -215,6 +215,7 @@ class Allowlist:
         return entry
 
     def __contains__(self, name: str) -> bool:
+        """True if ``name`` has been registered in this allowlist (either tier)."""
         return name in self._entries
 
     def get(self, name: str) -> ModelLicenseEntry | None:
@@ -223,6 +224,11 @@ class Allowlist:
         return self._entries.get(name)
 
     def list_tier(self, tier: ModelTier) -> list[ModelLicenseEntry]:
+        """Return every registered entry classified under ``tier``.
+
+        Does not apply the Tier 2 runtime guard (unlike :meth:`check`) --
+        this is for enumeration/reporting, not for gating actual usage.
+        """
         return [entry for entry in self._entries.values() if entry.tier is tier]
 
     def check(

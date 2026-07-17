@@ -37,6 +37,7 @@ EXPECTED_NUM_CLASSES = 4  # 4-faction community split
 
 
 def _load_karate_club():
+    """Load the bundled `KarateClub` dataset and return `(dataset, data)`."""
     dataset = KarateClub()
     data = dataset[0]
     return dataset, data

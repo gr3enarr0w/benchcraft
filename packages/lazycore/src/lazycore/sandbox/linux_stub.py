@@ -94,6 +94,12 @@ class LinuxNamespaceSandboxExecutor(BaseSandboxExecutor):
         *,
         policy: SandboxPolicy | None = None,
     ) -> SandboxResult:
+        """Always raise :class:`SandboxBackendUnavailableError`.
+
+        This stub never executes ``command`` under any isolation -- see the
+        module docstring for why a real namespace-based implementation
+        isn't provided here.
+        """
         raise self._unavailable()
 
     def run_callable(
@@ -102,4 +108,10 @@ class LinuxNamespaceSandboxExecutor(BaseSandboxExecutor):
         *,
         policy: SandboxPolicy | None = None,
     ) -> SandboxResult:
+        """Always raise :class:`SandboxBackendUnavailableError`.
+
+        This stub never executes ``func`` under any isolation -- see the
+        module docstring for why a real namespace-based implementation
+        isn't provided here.
+        """
         raise self._unavailable()

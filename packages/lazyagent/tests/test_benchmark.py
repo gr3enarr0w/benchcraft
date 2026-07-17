@@ -19,11 +19,18 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_run_benchmark_rejects_empty_task_list():
+    """`run_benchmark` raises ValueError instead of dividing by zero when
+    given an empty task suite (pass_rate/mean_latency would otherwise
+    divide by len(results) == 0)."""
     with pytest.raises(ValueError):
         run_benchmark([], rule_based_agent)
 
 
 def test_run_benchmark_aggregates_pass_rate_and_mean_latency(tmp_path: Path):
+    """The default two-task suite (one designed to pass, one to fail)
+    yields a 50% pass rate, correctly attributes which named task passed
+    vs. failed, and reports real, finite, positive latencies for every
+    task and for the aggregate mean."""
     suite = default_task_suite(tmp_path)  # one pass-designed, one fail-designed
 
     report = run_benchmark(suite, rule_based_agent)
@@ -52,6 +59,8 @@ def test_run_benchmark_aggregates_pass_rate_and_mean_latency(tmp_path: Path):
 
 
 def test_run_benchmark_with_only_passing_tasks_reports_perfect_pass_rate(tmp_path: Path):
+    """A suite made entirely of pass-designed tasks reports a 100% pass
+    rate and every individual result marked successful."""
     from benchcraft_lazyagent.tasks import make_pass_task
 
     tasks = [

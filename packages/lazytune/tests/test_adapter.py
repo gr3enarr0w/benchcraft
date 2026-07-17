@@ -32,15 +32,18 @@ CORPUS = [
 
 
 def test_programmatic_adapter_is_a_base_training_adapter():
+    """ProgrammaticAdapter must implement the Adapter-Factory base interface."""
     assert issubclass(ProgrammaticAdapter, BaseTrainingAdapter)
 
 
 def test_base_training_adapter_cannot_be_instantiated_directly():
+    """BaseTrainingAdapter is abstract (via abc.ABC) and cannot be instantiated."""
     with pytest.raises(TypeError):
         BaseTrainingAdapter()  # type: ignore[abstract]
 
 
 def test_build_hermetic_causal_lm_requires_no_network_and_is_tiny():
+    """The from-scratch GPT-2-architecture model builds without network access and stays tiny (<200K params)."""
     model, tokenizer = build_hermetic_causal_lm(CORPUS, n_embd=16, n_layer=1, n_head=1)
     assert isinstance(tokenizer, TinyTokenizer)
     n_params = sum(p.numel() for p in model.parameters())
@@ -50,6 +53,7 @@ def test_build_hermetic_causal_lm_requires_no_network_and_is_tiny():
 
 
 def test_tiny_tokenizer_encode_and_batch_encode_shapes():
+    """encode() returns plain ints; batch_encode() pads a batch to equal length and tracks each row's true (unpadded) length via attention_mask."""
     tokenizer = TinyTokenizer.build_from_corpus(CORPUS)
     encoded = tokenizer.encode("the quick brown fox")
     assert all(isinstance(i, int) for i in encoded)
@@ -63,6 +67,7 @@ def test_tiny_tokenizer_encode_and_batch_encode_shapes():
 
 
 def test_prepare_requires_call_before_train_step_or_save():
+    """train_step() and save_adapter() must raise RuntimeError if prepare() was never called."""
     adapter = ProgrammaticAdapter()
     with pytest.raises(RuntimeError):
         adapter.train_step(["the quick brown fox"])
@@ -71,6 +76,7 @@ def test_prepare_requires_call_before_train_step_or_save():
 
 
 def test_train_step_runs_and_returns_finite_loss():
+    """A single train_step() after prepare() returns a TrainStepResult with step=1 and a finite, positive loss."""
     adapter = ProgrammaticAdapter()
     adapter.prepare(None, CORPUS)
 
@@ -82,6 +88,7 @@ def test_train_step_runs_and_returns_finite_loss():
 
 
 def test_train_step_actually_changes_lora_parameters():
+    """Multiple train_step() calls must produce a genuine gradient update: at least one LoRA parameter tensor changes value."""
     adapter = ProgrammaticAdapter()
     adapter.prepare(None, CORPUS)
 
@@ -104,6 +111,7 @@ def test_train_step_actually_changes_lora_parameters():
 
 
 def test_multiple_train_steps_move_the_loss_and_increment_step_count():
+    """10 train_step() calls should increment the step counter to 10 and measurably move the loss (a real optimization signal, not a no-op)."""
     adapter = ProgrammaticAdapter(learning_rate=1e-2)
     adapter.prepare(None, CORPUS)
 
@@ -121,6 +129,7 @@ def test_multiple_train_steps_move_the_loss_and_increment_step_count():
 
 
 def test_save_adapter_writes_reloadable_files(tmp_path):
+    """save_adapter() writes adapter_config.json + adapter weights, and the saved directory can be reloaded onto a fresh matching base model via PeftModel.from_pretrained."""
     from peft import PeftModel
 
     adapter = ProgrammaticAdapter()
@@ -142,6 +151,7 @@ def test_save_adapter_writes_reloadable_files(tmp_path):
 
 
 def test_recommended_base_model_registered_as_tier_1():
+    """The documented real base-model checkpoint (openai-community/gpt2) is registered in MODEL_ALLOWLIST as Tier 1 (MIT, auto-usable)."""
     entry = MODEL_ALLOWLIST.get(RECOMMENDED_BASE_MODEL_NAME)
     assert entry is not None
     assert entry.tier is ModelTier.TIER_1
@@ -149,6 +159,7 @@ def test_recommended_base_model_registered_as_tier_1():
 
 
 def test_export_stubs_raise_not_implemented(tmp_path):
+    """Both export stubs must always raise NotImplementedError with a message identifying the intended format (GGUF / MLX)."""
     with pytest.raises(NotImplementedError, match="GGUF"):
         export_gguf_stub(tmp_path / "adapter", tmp_path / "model.gguf")
     with pytest.raises(NotImplementedError, match="MLX"):

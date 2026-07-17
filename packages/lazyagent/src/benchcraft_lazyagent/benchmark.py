@@ -52,6 +52,7 @@ class BenchmarkReport:
 
     @property
     def task_count(self) -> int:
+        """Number of tasks included in this report (``len(self.results)``)."""
         return len(self.results)
 
 

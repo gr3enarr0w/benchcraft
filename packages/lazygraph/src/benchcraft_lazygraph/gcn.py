@@ -60,6 +60,15 @@ class GCN(nn.Module):
     """
 
     def __init__(self, in_channels: int, hidden_channels: int, out_channels: int) -> None:
+        """Build the two `GCNConv` layers.
+
+        Args:
+            in_channels: Size of each input node feature vector.
+            hidden_channels: Size of the hidden representation produced by
+                the first `GCNConv` layer (after the ReLU).
+            out_channels: Size of the final per-node output (e.g. number of
+                classes for node classification, or embedding dimension).
+        """
         super().__init__()
         self.conv1 = GCNConv(in_channels, hidden_channels)
         self.conv2 = GCNConv(hidden_channels, out_channels)

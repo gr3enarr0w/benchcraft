@@ -373,6 +373,12 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
     """
 
     def is_available(self) -> bool:
+        """True if running on macOS with ``/usr/bin/sandbox-exec`` present.
+
+        Cheap, side-effect-free check per the
+        :meth:`~lazycore.sandbox.base.BaseSandboxExecutor.is_available`
+        contract -- it does not itself invoke ``sandbox-exec``.
+        """
         return platform.system() == "Darwin" and Path(_SANDBOX_EXEC_PATH).exists()
 
     def _require_available(self) -> None:
@@ -447,6 +453,20 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
         *,
         policy: SandboxPolicy | None = None,
     ) -> SandboxResult:
+        """Run ``command`` under a freshly-generated Seatbelt profile.
+
+        Builds an SBPL profile from the active (or overriding) policy via
+        :func:`build_sbpl_profile`, writes it to a temporary ``.sb`` file,
+        and invokes it through ``sandbox-exec -f <profile> -- <command>``.
+        The temporary profile file is always removed afterward, even on
+        timeout or other failure. A :exc:`subprocess.TimeoutExpired` (per
+        ``policy.timeout_seconds``) is translated into a ``SandboxResult``
+        with ``exit_code=124`` rather than propagating as an exception.
+
+        Raises:
+            SandboxBackendUnavailableError: If :meth:`is_available` is False
+                on this host.
+        """
         self._require_available()
         active_policy = self._resolve_policy(policy)
         profile = build_sbpl_profile(active_policy)
@@ -495,6 +515,26 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
         *,
         policy: SandboxPolicy | None = None,
     ) -> SandboxResult:
+        """Run ``func`` in a sandboxed subprocess by pickling and re-invoking it.
+
+        Since Seatbelt sandboxes an OS process, not an in-process Python
+        call, this marshals ``func`` to bytes with :mod:`pickle`, writes a
+        small runner script plus the pickled payload to a temporary
+        directory, and delegates to :meth:`run_command` to execute
+        ``python <runner> <pickle>`` under the sandbox. The runner captures
+        the callable's return value via ``repr()`` on stdout, or a
+        traceback plus a nonzero exit code if it raises. The temporary
+        directory (and the harness's own runner/payload files within it) is
+        always granted read access regardless of the caller's policy, since
+        it is internal plumbing rather than user data.
+
+        Raises:
+            ValueError: If ``func`` cannot be pickled (e.g. a local closure
+                or lambda) -- only module-level, picklable callables are
+                supported.
+            SandboxBackendUnavailableError: If :meth:`is_available` is False
+                on this host.
+        """
         self._require_available()
         active_policy = self._resolve_policy(policy)
 

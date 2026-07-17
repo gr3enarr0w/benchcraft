@@ -44,6 +44,7 @@ def _make_synthetic_panel(n_points: int = 120, seed: int = 42) -> pd.DataFrame:
 
 @pytest.fixture(scope="module")
 def synthetic_panel() -> pd.DataFrame:
+    """Module-scoped synthetic two-series panel, built once and shared across tests."""
     return _make_synthetic_panel()
 
 
@@ -54,20 +55,24 @@ def arrow_backed_panel(synthetic_panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def test_supported_models_are_classical_only() -> None:
+    """SUPPORTED_MODELS must contain exactly the two classical models in scope for this pass."""
     assert set(SUPPORTED_MODELS) == {"AutoARIMA", "AutoETS"}
 
 
 def test_forecast_config_rejects_unsupported_model() -> None:
+    """ForecastConfig must raise ValueError for a model name outside SUPPORTED_MODELS."""
     with pytest.raises(ValueError, match="Unsupported model"):
         ForecastConfig(models=("LightGBM",))
 
 
 def test_forecast_config_rejects_empty_models() -> None:
+    """ForecastConfig must raise ValueError when models is an empty tuple."""
     with pytest.raises(ValueError, match="must not be empty"):
         ForecastConfig(models=())
 
 
 def test_validate_input_reports_arrow_backed_columns(arrow_backed_panel: pd.DataFrame) -> None:
+    """validate_input() on a fully ArrowDtype-backed frame reports no warnings and is_fully_arrow_backed=True."""
     report = validate_input(arrow_backed_panel)
     assert report.input_kind == "pandas"
     assert report.n_series == 2
@@ -76,23 +81,27 @@ def test_validate_input_reports_arrow_backed_columns(arrow_backed_panel: pd.Data
 
 
 def test_validate_input_warns_on_non_arrow_backed(synthetic_panel: pd.DataFrame) -> None:
+    """validate_input() on a plain numpy-backed pandas frame flags it as not Arrow-backed via a warning."""
     report = validate_input(synthetic_panel)
     assert report.is_fully_arrow_backed is False
     assert any("Arrow-backed" in w for w in report.warnings)
 
 
 def test_validate_input_missing_column_raises(synthetic_panel: pd.DataFrame) -> None:
+    """validate_input() must raise ValueError when a required id/time/value column is missing."""
     broken = synthetic_panel.drop(columns=["y"])
     with pytest.raises(ValueError, match="missing required column"):
         validate_input(broken)
 
 
 def test_validate_input_rejects_non_dataframe() -> None:
+    """validate_input() must raise TypeError for input that is neither a pandas nor a Polars DataFrame."""
     with pytest.raises(TypeError):
         validate_input([1, 2, 3])
 
 
 def test_prepare_frame_produces_expected_schema(arrow_backed_panel: pd.DataFrame) -> None:
+    """prepare_frame() must rename/coerce input into statsforecast's unique_id/ds/y schema with correct dtypes."""
     prepared = prepare_frame(arrow_backed_panel)
     assert list(prepared.columns) == ["unique_id", "ds", "y"]
     assert prepared["ds"].dtype.kind == "M"  # datetime64
@@ -102,6 +111,7 @@ def test_prepare_frame_produces_expected_schema(arrow_backed_panel: pd.DataFrame
 
 
 def test_prepare_frame_rejects_nan_values(synthetic_panel: pd.DataFrame) -> None:
+    """prepare_frame() must raise ValueError when the value column contains a NaN (no silent imputation)."""
     broken = synthetic_panel.copy()
     broken.loc[0, "y"] = float("nan")
     with pytest.raises(ValueError, match="NaN/inf"):
@@ -109,6 +119,7 @@ def test_prepare_frame_rejects_nan_values(synthetic_panel: pd.DataFrame) -> None
 
 
 def test_forecast_autoarima_shape_and_finiteness(arrow_backed_panel: pd.DataFrame) -> None:
+    """forecast() with a single model must return exactly horizon rows per series, all finite."""
     config = ForecastConfig(horizon=7, freq="D", season_length=7, models=("AutoARIMA",))
     result = forecast(arrow_backed_panel, config)
 
@@ -122,6 +133,7 @@ def test_forecast_autoarima_shape_and_finiteness(arrow_backed_panel: pd.DataFram
 
 
 def test_forecast_multiple_models(arrow_backed_panel: pd.DataFrame) -> None:
+    """forecast() with multiple models must produce one finite forecast column per fitted model."""
     config = ForecastConfig(horizon=5, freq="D", season_length=7, models=("AutoARIMA", "AutoETS"))
     result = forecast(arrow_backed_panel, config)
 
@@ -140,6 +152,7 @@ def test_forecast_accepts_plain_pandas_without_arrow_dtype(synthetic_panel: pd.D
 
 
 def test_forecast_accepts_custom_column_names(synthetic_panel: pd.DataFrame) -> None:
+    """forecast() must work when the caller's id/time/value columns are named via ForecastConfig, not the defaults."""
     renamed = synthetic_panel.rename(columns={"unique_id": "series_id", "ds": "timestamp", "y": "value"})
     config = ForecastConfig(
         id_col="series_id", time_col="timestamp", value_col="value", horizon=5, models=("AutoARIMA",)
@@ -149,6 +162,7 @@ def test_forecast_accepts_custom_column_names(synthetic_panel: pd.DataFrame) -> 
 
 
 def test_forecast_accepts_polars_input(synthetic_panel: pd.DataFrame) -> None:
+    """validate_input() and forecast() must accept a Polars DataFrame directly, routed via from_polars_zero_copy."""
     pl = pytest.importorskip("polars")
     polars_panel = pl.from_pandas(synthetic_panel)
 

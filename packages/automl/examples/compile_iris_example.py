@@ -32,6 +32,15 @@ from benchcraft_automl import CompileOptions, ONNXExtraNotInstalledError, compil
 
 
 def main() -> None:
+    """Fit, compile, and cross-check a sklearn pipeline on the Iris dataset.
+
+    Trains a StandardScaler + LogisticRegression pipeline, compiles it to
+    ONNX via `benchcraft_automl.compile`, runs the graph through
+    `onnxruntime`, and asserts the ONNX labels/probabilities match the
+    original sklearn pipeline's own `predict`/`predict_proba` output.
+    Exits with status 1 (printing an install hint) if the optional `onnx`
+    extra is not installed.
+    """
     try:
         import onnxruntime
     except ImportError:
