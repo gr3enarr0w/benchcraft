@@ -10,6 +10,8 @@ This repository currently contains **no source code** — only the architecture/
 
 `Benchcraft_Unified_Architecture.md` is the locked v1 architecture spec for **Benchcraft**, a unified, MIT-licensed, local-first ML tooling platform (tabular AutoML, data cleaning, time-series forecasting, graph ML, computer vision, LLM fine-tuning, LLM/agent red-teaming, agent/RAG benchmark eval). It was synthesized from nine independent module research docs plus a stakeholder scope-lock Q&A, and its decisions marked "Locked" in Part 4 should be treated as settled — do not silently re-litigate them when writing code or docs. Read the full document before implementing any module; the summary below only orients you.
 
+**Post-v1 direction (not a v1 requirement):** Benchcraft is meant to eventually expose an MCP server and an installable Skill so Hermes and other AI agent tools can consume its modules as callable tools, not just as a Python library. This is a generic library capability, not a bespoke integration for one consumer. See Part 6 of the architecture doc. Don't shape any module's v1 public API around this prematurely — just keep APIs clean enough to wrap later.
+
 ## Core scope constraints (apply to any code written in this repo)
 
 - **Local-only, v1.** No cloud deployment path, no remote inference endpoint, no cloud/remote targets for red-teaming or agent-eval modules. Everything runs on the reference machine (Apple Silicon M4 Max class, 128GB unified memory).
