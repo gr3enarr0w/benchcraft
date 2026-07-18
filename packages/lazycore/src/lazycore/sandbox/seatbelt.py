@@ -995,11 +995,17 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
                 lives; or if it cannot be resolved back to the exact same
                 function object from within its own ``__globals__``.
         """
-        if not isinstance(func, types.FunctionType):
+        # `type(x) is types.FunctionType` (not `isinstance`) deliberately:
+        # isinstance()'s slow path consults the target's overridable
+        # `__class__` property when the fast type check fails, so a hostile
+        # object with a `__class__` property could execute arbitrary code in
+        # this trusted host process merely by being passed to isinstance(),
+        # before any of the checks below even run.
+        if type(func) is not types.FunctionType:
             raise TypeError(
                 "run_callable() only supports module-level functions or "
                 "functools.partial wrapping one -- got a non-function "
-                f"object of type {type(func).__name__!r}."
+                f"object of type {_safe_type_name(func)!r}."
             )
 
         qualname = getattr(func, "__qualname__", "")
@@ -1012,8 +1018,8 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
         if type(qualname) is not str or type(module_name) is not str:
             raise ValueError(
                 "run_callable() requires plain string module metadata -- "
-                f"got __qualname__ of type {type(qualname).__name__!r} and "
-                f"__module__ of type {type(module_name).__name__!r} for "
+                f"got __qualname__ of type {_safe_type_name(qualname)!r} and "
+                f"__module__ of type {_safe_type_name(module_name)!r} for "
                 f"{func!r}. Both must be exactly `str` (not a subclass): "
                 "comparing or containment-testing a non-str value here "
                 "would invoke attacker-controlled __eq__/__ne__/__contains__ "
@@ -1050,7 +1056,7 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
             raise ValueError(
                 "run_callable() requires plain string module metadata -- "
                 f"{func!r}'s own __globals__['__name__'] is of type "
-                f"{type(actual_module_name).__name__!r}, not `str`. "
+                f"{_safe_type_name(actual_module_name)!r}, not `str`. "
                 "Refusing to compare it against __module__ before any such "
                 "comparison is attempted."
             )
@@ -1118,7 +1124,25 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
                 module/qualname, or its bound arguments are not
                 JSON-serializable.
         """
-        if isinstance(func, functools.partial):
+        # `type(func) is functools.partial`, not `isinstance(func,
+        # functools.partial)`: a *subclass* of functools.partial can shadow
+        # the base class's `.func`/`.args`/`.keywords` getset-descriptors
+        # with its own instance property (verified empirically -- a
+        # subclass defining `func` as a `@property` runs its getter body,
+        # unsandboxed, the moment `func.func` below is merely read). That is
+        # the exact same "even introspecting this untrusted object runs
+        # attacker code in the trusted host process" vulnerability class as
+        # the metaclass-`__getattribute__`-on-`.__name__` issue fixed via
+        # :func:`_safe_type_name` elsewhere in this module, just triggered
+        # through instance-attribute override instead of a metaclass hook.
+        # An exact-type identity check accepts only the real, unsubclassed
+        # `functools.partial`, whose C-level descriptors cannot be
+        # overridden per-instance -- a genuine partial subclass instead
+        # falls through to the plain `_resolve_module_level_function(func)`
+        # branch below, which itself uses `type(func) is types.FunctionType`
+        # (not `isinstance`, for the same exact-type-identity reason) and so
+        # correctly (and safely) rejects it.
+        if type(func) is functools.partial:
             module_name, qualname = self._resolve_module_level_function(func.func)
             args: tuple[object, ...] = func.args
             kwargs: dict[str, object] = dict(func.keywords or {})

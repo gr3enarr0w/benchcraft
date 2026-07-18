@@ -311,6 +311,197 @@ def test_str_subclass_module_attribute_is_also_rejected(monkeypatch):
         executor._resolve_module_level_function(tampered)
 
 
+class _NameHookTripwireMeta(type):
+    """A metaclass whose ``__getattribute__`` raises ``AssertionError`` if
+    ever asked for ``"__name__"`` on a class using it.
+
+    Same fixture shape as ``test_json_safe_value.py``'s
+    ``_NameHookTripwireMeta`` (kept local to this file rather than shared,
+    matching this file's existing self-contained-fixture convention): a
+    plain ``type(value).__name__`` correctly bypasses an overridable
+    ``value.__class__`` property by going through ``type()``, but a bare
+    ``.__name__`` attribute read off *that* type object is still a normal
+    attribute lookup -- one a sufficiently exotic custom metaclass can hook.
+
+    Used here to prove that ``_resolve_module_level_function`` -- which
+    builds error messages mentioning ``type(func).__name__`` and
+    ``type(qualname).__name__``/``type(module_name).__name__`` -- now goes
+    through ``_safe_type_name()`` everywhere and therefore never triggers
+    this hook, even when rejecting exactly the values whose type name it is
+    trying to report.
+    """
+
+    def __getattribute__(cls, name):
+        if name == "__name__":
+            raise AssertionError(
+                "metaclass __getattribute__ must never be invoked for "
+                "'__name__' while building a validation rejection message"
+            )
+        return super().__getattribute__(name)
+
+
+class _HookedType(metaclass=_NameHookTripwireMeta):
+    """An instance of this class has a true type using a metaclass that
+    tripwires on ``.__name__`` access."""
+
+
+class _HookedStrLike(str, metaclass=_NameHookTripwireMeta):
+    """A ``str`` subclass whose metaclass tripwires on ``.__name__`` access.
+
+    Used to simulate ``func.__module__``/``func.__qualname__`` being
+    tampered to an instance of a class that satisfies neither the
+    ``type(x) is str`` check (since it's a subclass, so it's still rejected
+    for that reason) *and* whose type itself is hostile -- proving the
+    subsequent error-message construction reporting the rejected value's
+    type name does not trigger the metaclass hook either.
+    """
+
+
+def test_non_function_with_name_hooked_metaclass_is_rejected_without_triggering_hook():
+    """A ``func`` argument that is not a ``types.FunctionType`` at all, and
+    whose own true type uses a ``__name__``-hooking metaclass, is rejected
+    via the intended ``TypeError`` -- and the metaclass hook never fires
+    while ``_resolve_module_level_function`` builds the rejection message
+    (which reports ``type(func).__name__`` via ``_safe_type_name``).
+    """
+    executor = SeatbeltSandboxExecutor()
+    hostile_func = _HookedType()
+
+    with pytest.raises(TypeError, match="non-function"):
+        executor._resolve_module_level_function(hostile_func)
+
+
+def test_tampered_module_attribute_with_name_hooked_metaclass_is_rejected_without_triggering_hook(
+    monkeypatch,
+):
+    """A real module-level function whose ``__module__`` has been tampered
+    to an instance of a class using a ``__name__``-hooking metaclass is
+    rejected via the intended ``ValueError`` (failing the
+    ``type(module_name) is str`` check) -- and the metaclass hook never
+    fires while the rejection message (which reports
+    ``type(module_name).__name__`` via ``_safe_type_name``) is built.
+    """
+    executor = SeatbeltSandboxExecutor()
+    tampered = _make_tampered_function(monkeypatch, _HookedType())
+
+    with pytest.raises(ValueError, match="plain string"):
+        executor._resolve_module_level_function(tampered)
+
+
+def test_tampered_qualname_attribute_with_name_hooked_metaclass_is_rejected_without_triggering_hook(
+    monkeypatch,
+):
+    """Same regression as above, but for a tampered ``__qualname__``
+    instead of ``__module__``. ``__qualname__``'s C-level slot enforces
+    ``isinstance(value, str)`` at assignment time, so the tampered value
+    must itself be a ``str`` subclass (``_HookedStrLike``, which also uses
+    the ``__name__``-hooking metaclass) rather than an unrelated object --
+    exactly like ``test_non_string_qualname_attribute_is_rejected_without_invoking_dunders``
+    above needs a ``str`` subclass for the same structural reason.
+    """
+    monkeypatch.setattr(
+        _victim_module_level_function,
+        "__qualname__",
+        _HookedStrLike(_victim_module_level_function.__qualname__),
+        raising=True,
+    )
+
+    executor = SeatbeltSandboxExecutor()
+    with pytest.raises(ValueError, match="plain string"):
+        executor._resolve_module_level_function(_victim_module_level_function)
+
+
+class _EvilPartialFunc:
+    """Property getter that raises if ever accessed -- used below as the
+    shadowed ``.func`` value on a malicious ``functools.partial`` subclass.
+    """
+
+    def __get__(self, obj, objtype=None):
+        raise AssertionError(
+            "SECURITY REGRESSION: a functools.partial *subclass*'s "
+            "overridden `.func` property getter was invoked -- "
+            "_decompose_callable must only ever treat an exact, "
+            "unsubclassed `functools.partial` instance as a partial "
+            "(via `type(func) is functools.partial`), never a subclass, "
+            "since a subclass can shadow `.func`/`.args`/`.keywords` with "
+            "its own instance property that runs arbitrary code the "
+            "moment it is merely read."
+        )
+
+
+def test_functools_partial_subclass_overriding_func_property_is_rejected_via_type_function_path():
+    """A ``functools.partial`` *subclass* that shadows ``.func`` with a
+    property whose getter raises if invoked must be rejected via the plain
+    ``_resolve_module_level_function(func)`` path (which correctly raises
+    ``TypeError`` since a partial subclass is not a ``types.FunctionType``)
+    -- without ever calling the hostile subclass's ``.func`` getter.
+
+    This proves ``_decompose_callable`` uses ``type(func) is
+    functools.partial`` (exact-type identity), not
+    ``isinstance(func, functools.partial)``: the latter would let this
+    subclass through the "it's a partial" branch and immediately trigger
+    the hostile ``.func`` property access below.
+    """
+    import functools
+
+    class EvilPartial(functools.partial):
+        func = _EvilPartialFunc()
+
+    hostile = EvilPartial(_legitimate_module_level_function)
+    assert isinstance(hostile, functools.partial)  # sanity: it IS a partial subclass
+
+    executor = SeatbeltSandboxExecutor()
+    with pytest.raises(TypeError, match="non-function"):
+        executor._decompose_callable(hostile)
+
+
+class _HostileClassProperty:
+    """An object whose ``__class__`` property getter raises if ever
+    accessed -- used to prove ``_resolve_module_level_function``'s very
+    first check (rejecting non-function ``func`` arguments) uses
+    ``type(func) is types.FunctionType`` and not ``isinstance(func,
+    types.FunctionType)``.
+
+    ``isinstance()``'s slow path consults the target's ``__class__``
+    attribute when the fast ``Py_TYPE()`` check fails, and ``__class__`` is
+    an ordinary, overridable property like any other. A hostile object
+    could make its getter return ``types.FunctionType`` (spoofing the
+    isinstance check into passing) or do anything else -- either way, the
+    getter body already ran, unsandboxed, in the trusted host process,
+    before any of this function's other checks get a chance to run. This is
+    the same "even introspecting this untrusted object runs attacker code"
+    vulnerability class as the ``functools.partial``-subclass and
+    metaclass-``__getattribute__`` findings above, just triggered through
+    ``__class__`` instead of ``.func`` or ``.__name__``.
+    """
+
+    @property
+    def __class__(self):  # type: ignore[override]
+        raise AssertionError(
+            "SECURITY REGRESSION: a hostile object's __class__ property "
+            "getter was invoked -- _resolve_module_level_function must use "
+            "`type(func) is types.FunctionType` (exact-type identity), "
+            "never `isinstance(func, types.FunctionType)`, since "
+            "isinstance()'s slow path reads the overridable __class__ "
+            "attribute and would run this getter in the trusted host "
+            "process before any other check runs."
+        )
+
+
+def test_hostile_class_property_is_rejected_without_triggering_its_getter():
+    """The very first check in ``_resolve_module_level_function`` must
+    reject a non-function ``func`` via plain ``TypeError`` without ever
+    invoking a hostile ``__class__`` property getter on it -- proving the
+    exact-type check (``type(func) is types.FunctionType``) is used instead
+    of ``isinstance``.
+    """
+    executor = SeatbeltSandboxExecutor()
+    hostile = _HostileClassProperty()
+
+    with pytest.raises(TypeError, match="non-function"):
+        executor._resolve_module_level_function(hostile)
+
+
 def test_dotted_qualname_is_rejected_as_unsupported():
     """A function whose __qualname__ contains a dot (e.g. a method or a
     function nested under a class) is rejected outright -- the
