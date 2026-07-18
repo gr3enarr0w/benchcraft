@@ -19,7 +19,7 @@ concurrency:
 jobs:
   test:
     name: test (${{ matrix.package }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -29,27 +29,47 @@ jobs:
           # first for every other package (see requirements-dev.txt).
           - package: lazycore
             extras: dev
+            runs-on: ubuntu-latest
           # automl's ONNX export path (.compile() -> skl2onnx) is behind
           # the optional `onnx` extra, not the core dependency set.
           - package: automl
             extras: dev,onnx
+            runs-on: ubuntu-latest
           - package: lazyclean
             extras: dev
+            runs-on: ubuntu-latest
           - package: lazyforecast
             extras: dev
+            runs-on: ubuntu-latest
           # Heavy: torch + torch_geometric.
           - package: lazygraph
             extras: dev
+            runs-on: ubuntu-latest
           # Heavy: torch + onnx + onnxscript.
           - package: lazyvision
             extras: dev
+            runs-on: ubuntu-latest
           # Heavy: torch + transformers + peft.
           - package: lazytune
             extras: dev
+            runs-on: ubuntu-latest
+          # lazyred and lazyagent's test suites exercise the *real*
+          # lazycore sandbox executor (not a mock). Per CLAUDE.md/the
+          # architecture doc (Mac sandboxing uses Seatbelt; the Linux
+          # namespace backend is an explicit, documented, unimplemented
+          # stub that always raises SandboxBackendUnavailableError), these
+          # tests can only genuinely pass on macOS today. Running them on
+          # ubuntu-latest doesn't test "the same thing but on Linux" --
+          # it deterministically fails by design, every time, regardless
+          # of any real regression. Use a real Apple Silicon runner so
+          # this job actually exercises the intended code path, matching
+          # this repo's stated primary reference platform.
           - package: lazyred
             extras: dev
+            runs-on: macos-14
           - package: lazyagent
             extras: dev
+            runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
