@@ -1,0 +1,154 @@
+language: en-US
+
+reviews:
+  auto_review:
+    enabled: true
+    drafts: true
+  high_level_summary: true
+  poem: false
+  request_changes_workflow: false
+
+  # Give CodeRabbit repo-specific review posture per directory, mirroring
+  # CLAUDE.md's own distinction between production code and demo code.
+  path_instructions:
+    - path: "packages/*/src/**"
+      instructions: >
+        This is production library code for an installable Benchcraft
+        package. Review strictly: flag missing/incorrect type hints,
+        undocumented public functions/classes, silent exception
+        swallowing, and any deviation from the licensing policy in
+        CLAUDE.md (no GPL/AGPL runtime deps outside the documented
+        subprocess-isolation pattern; no torch/transformers in
+        lazyclean; no torch-sparse/METIS in lazygraph). Per CLAUDE.md,
+        also flag any new shared inter-module interface, router, or
+        `BaseTarget`-style abstraction as out of scope -- those are
+        explicitly deferred architecture decisions, not omissions.
+    - path: "packages/*/examples/**"
+      instructions: >
+        These are runnable demo scripts, not library code. Review
+        leniently: docstring coverage and exhaustive error handling are
+        not required here. Do flag if a demo reimplements logic instead
+        of importing it from the package's public API (CLAUDE.md's
+        "no net-new scripts" rule still applies to examples).
+    - path: "packages/*/tests/**"
+      instructions: >
+        Test code. Prioritize catching tests that don't actually assert
+        anything, over-mocked tests that no longer exercise real
+        behavior, and use of `pytest.importorskip` that would silently
+        skip an entire tier of coverage (see the lazycore `dev` extra
+        comment in packages/lazycore/pyproject.toml for the exact
+        failure mode this project already hit once).
+
+  # Pre-merge quality gates shown on every PR.
+  pre_merge_checks:
+    docstrings:
+      mode: warning
+      # Default threshold is 80. The repo already sits at ~85-90%+
+      # coverage after a dedicated docstring pass (see commit
+      # "docs: add docstrings across all packages to clear CodeRabbit
+      # coverage threshold"), so raising the bar keeps it from silently
+      # drifting back down. Left at "warning" rather than "error": this
+      # is a solo/small-team repo without `request_changes_workflow`,
+      # and an "error" mode pre-merge check can still fail the required
+      # `CodeRabbit` status check outright, which is too blunt a hammer
+      # for docstring coverage specifically (unlike an actual failing
+      # test, a docstring gap is a style issue, not a correctness one).
+      threshold: 85
+    # "Linked issues" and "out of scope changes" pre-merge checks are
+    # already on by CodeRabbit's own defaults; no config needed to keep
+    # them enabled.
+    #
+    # Custom check: nothing in CodeRabbit's schema can literally run
+    # pytest (that's what .github/workflows/test.yml is for), but this
+    # asks the reviewer model to flag the specific, common regression
+    # of adding/changing src code with no corresponding test change --
+    # a real gap CodeRabbit's diff-aware review is well-suited to catch
+    # even though it can't execute code.
+    custom_checks:
+      - name: "Tests updated for src changes"
+        mode: warning
+        instructions: >
+          If this PR adds or modifies any file under a
+          packages/*/src/** path, check whether the PR also adds or
+          modifies at least one file under that same package's
+          packages/*/tests/** path. Pass if there is a corresponding
+          test change, or if the src change is a comment/docstring-only
+          change, a rename with no behavior change, or the PR
+          description explicitly justifies why no test change is
+          needed (e.g. "covered by existing test X"). Otherwise fail
+          with a note identifying which src files lack a corresponding
+          test change.
+
+  # markdownlint already flagged a real issue in an earlier PR via
+  # CodeRabbit's default tool detection; declared explicitly here so that
+  # stays true rather than depending on undocumented auto-detection.
+  # Unlike pylint/flake8 (see "not enabled" notes below), this doesn't
+  # compete with an existing tool already running on this repo.
+  tools:
+    markdownlint:
+      enabled: true
+
+  # Unit-test generation ("Generate unit tests" checkbox) is on by
+  # CodeRabbit's own default (reviews.finishing_touches.unit_tests.enabled
+  # defaults to true); declared explicitly here for visibility rather than
+  # relying on an undocumented-in-repo default. No separate "aggressiveness"
+  # knob exists in CodeRabbit's schema beyond this boolean plus the
+  # code_generation path instructions below.
+  finishing_touches:
+    unit_tests:
+      enabled: true
+
+# Guides CodeRabbit's own "Generate unit tests" and "Generate docstrings"
+# suggestions to respect the same production-vs-demo split as the review
+# path_instructions above, so generated tests target src/ behavior instead
+# of examples/ scripts.
+code_generation:
+  unit_tests:
+    path_instructions:
+      - path: "packages/*/src/**"
+        instructions: >
+          Generate tests under the matching packages/<name>/tests/
+          directory using pytest, not unittest.TestCase, matching this
+          repo's existing test style.
+      - path: "packages/*/examples/**"
+        instructions: >
+          Do not generate unit tests for example/demo scripts.
+
+chat:
+  auto_reply: true
+
+# Not enabled, and considered deliberately:
+#
+# - Additional linters (pylint/flake8) under reviews.tools: this repo
+#   already gets Ruff findings surfaced by CodeRabbit's default tool
+#   detection. Layering pylint/flake8 on top of Ruff on the same Python
+#   codebase mostly produces duplicate or conflicting style opinions
+#   (pylint in particular is noisy on scaffold-depth code) rather than
+#   new signal, for a solo/small-team repo that doesn't otherwise run
+#   pylint locally. Skipped.
+# - mypy: not present in CodeRabbit's reviews.tools schema at all (only
+#   ruff/flake8/pylint are supported for Python), so there's no config
+#   surface to enable it here. If static type checking becomes a real
+#   priority, it belongs as its own job in .github/workflows/test.yml
+#   (running an actual mypy CLI), not something to fake via CodeRabbit
+#   config -- not added in this pass since none of the 9 packages
+#   currently opt into strict typing (no mypy config anywhere in the repo).
+# - SAST tools (semgrep/opengrep/checkov/trivy/osvScanner): this is a
+#   local-first ML tooling library, not an IaC or web-service codebase --
+#   checkov/trivy target infra-as-code that doesn't exist here. semgrep
+#   could plausibly add value on the sandbox-executor code specifically
+#   (given today's two real security fixes there), but its default
+#   rulesets need real tuning to avoid noise on a Python ML repo, which
+#   is more setup investment than this pass has budget for. Revisit if
+#   the sandbox executor sees more security-sensitive changes.
+# - gitleaks/trufflehog (secret scanning): plausibly cheap and useful,
+#   but CodeRabbit enables secret-scanning-class tools by default already
+#   and this repo has no history of committed secrets; not worth an
+#   explicit override either way.
+# - knowledge_base.learnings.scope: left at its default ("auto", which
+#   resolves to "local" for this public repo) -- that's already the
+#   correct behavior for a single-repo, not-yet-multi-repo project.
+# - knowledge_base.code_guidelines: left at its default (enabled: true,
+#   auto-detecting convention files like CLAUDE.md) since that default
+#   already explains the "Based on learnings" reference CodeRabbit
+#   produced during today's reviews; no override needed.
