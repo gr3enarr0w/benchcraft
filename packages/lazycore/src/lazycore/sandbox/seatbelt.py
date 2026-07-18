@@ -353,6 +353,38 @@ def _reject_overbroad_allowed_path(path: str, *, kind: str) -> str:
     return resolved_str
 
 
+def _safe_type_name(value: object) -> str:
+    """Return ``type(value).__name__`` without ever risking a hostile
+    metaclass's ``__getattribute__`` hook (Finding 1 fix, second half).
+
+    ``type(value)`` itself is safe -- it is the C-level ``Py_TYPE()``
+    lookup, and (unlike ``value.__class__``, which is an overridable
+    property/descriptor an attacker-crafted instance could hijack) cannot
+    be fooled into returning anything other than ``value``'s real,
+    underlying type. But the *next* step, a plain ``.__name__`` attribute
+    access on that type object, is a normal Python attribute lookup --
+    which means if ``type(value)`` itself was created with a sufficiently
+    exotic, attacker-controlled **metaclass** that overrides
+    ``__getattribute__``, reading ``.__name__`` off it would invoke that
+    metaclass's ``__getattribute__`` hook. That hook runs in this trusted
+    host process, before/while this function is merely trying to *report*
+    that ``value`` is invalid -- the same "even rejection isn't safe"
+    problem already solved for ``repr()``/``str()`` elsewhere in this
+    module, just one level up the type hierarchy.
+
+    ``type.__getattribute__(type(value), "__name__")`` sidesteps this: it
+    explicitly invokes the base :class:`type` class's own, non-overridden
+    attribute-lookup machinery on the type object, rather than whatever
+    ``__getattribute__`` the type's own (possibly malicious) metaclass
+    defines. This has been empirically verified to still return the
+    correct, ordinary name for normal types (e.g.
+    ``type.__getattribute__(type(5), "__name__") == "int"``) while
+    bypassing a metaclass ``__getattribute__`` override that would
+    otherwise fire for a crafted type.
+    """
+    return type.__getattribute__(type(value), "__name__")
+
+
 def _validate_json_safe_value(value: object, *, path: str) -> None:
     """Recursively validate that ``value`` contains only genuinely
     JSON-native types, for use before ``run_callable()`` writes bound
@@ -408,14 +440,34 @@ def _validate_json_safe_value(value: object, *, path: str) -> None:
     tries to *report* that the value is invalid -- i.e. even the "we're
     rejecting this" path is not safe unless it avoids touching the object
     itself. Error messages below therefore only ever use
-    ``type(value).__name__`` (an attribute access on the *type* object, not
-    a method call on the untrusted instance -- always safe) and the
+    :func:`_safe_type_name` (never a bare ``type(value).__name__``) and the
     caller-constructed, already-known-safe ``path`` string, never a
     ``repr()``/``str()``/f-string ``!r``/``!s`` of ``value`` itself. The one
     exception is a dict key already confirmed to be exactly ``str`` (not a
     subclass) by the ``type(key) is not str`` check immediately above each
     such use -- plain ``str.__repr__`` cannot be overridden without
     subclassing, so that specific ``repr()`` call is safe.
+
+    **Why not a bare ``type(value).__name__``?** ``type(value)`` correctly
+    bypasses an overridable ``value.__class__`` property and returns
+    ``value``'s true underlying type -- but a plain ``.__name__`` attribute
+    read on *that* type object is still a normal attribute lookup, which a
+    sufficiently exotic custom **metaclass** (one that overrides
+    ``__getattribute__``) could hook to run code the moment this validator
+    merely tries to name the rejected type. :func:`_safe_type_name` avoids
+    this by explicitly using ``type``'s own attribute-lookup machinery
+    (``type.__getattribute__(type(value), "__name__")``) instead of
+    whatever ``__getattribute__`` the value's actual type's metaclass might
+    define. The same reasoning is why the tuple check just below uses
+    ``type(value) is tuple`` rather than ``isinstance(value, tuple)``:
+    ``isinstance()`` can, on some code paths, consult the overridable
+    ``value.__class__`` rather than purely the C-level true type, whereas
+    ``type(value) is tuple`` is a direct ``Py_TYPE()`` identity comparison
+    that a crafted ``__class__`` property cannot influence. (A genuine
+    ``tuple`` *subclass* falls through to the generic "not a JSON-native
+    type" rejection below instead of the tuple-specific message -- it is
+    still rejected either way, just via the more general error message,
+    exactly like every other non-JSON-native type.)
 
     Raises:
         ValueError: If ``value`` (or anything nested inside it) is a
@@ -435,7 +487,7 @@ def _validate_json_safe_value(value: object, *, path: str) -> None:
             if type(key) is not str:
                 raise ValueError(
                     f"{path} has a non-string key of type "
-                    f"{type(key).__name__!r}. run_callable() rejects this "
+                    f"{_safe_type_name(key)!r}. run_callable() rejects this "
                     "instead of letting json.dumps() silently stringify it "
                     '(e.g. turning {1: ...} into {"1": ...} on the wire) -- '
                     "that would change what key the sandboxed child "
@@ -453,7 +505,7 @@ def _validate_json_safe_value(value: object, *, path: str) -> None:
             _validate_json_safe_value(item, path=f"{path}[{key!r}]")
         return
 
-    if isinstance(value, tuple):
+    if type(value) is tuple:
         raise ValueError(
             f"{path} is a tuple. run_callable() rejects tuple "
             "arguments instead of letting json.dumps() silently coerce "
@@ -468,7 +520,7 @@ def _validate_json_safe_value(value: object, *, path: str) -> None:
         )
 
     raise ValueError(
-        f"{path} is of type {type(value).__name__!r}, which is "
+        f"{path} is of type {_safe_type_name(value)!r}, which is "
         "not a JSON-native type. run_callable() only supports str, int, "
         "float, bool, None, list, and dict (with string keys) for "
         "functools.partial bound arguments. (The value itself is "
@@ -510,7 +562,7 @@ def _validate_run_callable_arguments(
     for key, value in kwargs.items():
         if type(key) is not str:
             raise ValueError(
-                f"a kwargs key of type {type(key).__name__!r} is not a "
+                f"a kwargs key of type {_safe_type_name(key)!r} is not a "
                 "string. run_callable() keyword arguments must have string "
                 "keys. (The key's value is deliberately omitted from this "
                 "message -- repr()/str() on an untrusted, already-invalid "

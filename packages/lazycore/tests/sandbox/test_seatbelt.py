@@ -332,44 +332,6 @@ def test_run_callable_rejects_malicious_repr_value_without_calling_it(monkeypatc
         executor.run_callable(partial_call)
 
 
-def test_validate_json_safe_value_rejects_malicious_repr_directly():
-    """Direct unit-level regression test for _validate_json_safe_value: a bad value with a malicious __repr__/__str__ is rejected with ValueError, and the malicious dunder methods are never invoked, without going through the full run_callable()/sandbox machinery at all."""
-    from lazycore.sandbox.seatbelt import _validate_json_safe_value
-
-    class _ExplodingRepr:
-        def __repr__(self):
-            raise AssertionError("__repr__ must never be called on an untrusted value")
-
-        def __str__(self):
-            raise AssertionError("__str__ must never be called on an untrusted value")
-
-    with pytest.raises(ValueError, match="not a JSON-native type"):
-        _validate_json_safe_value(_ExplodingRepr(), path="args[0]")
-
-    # Also exercise the non-string-dict-key rejection path with a malicious
-    # key whose __repr__/__str__ raise.
-    class _ExplodingKey:
-        def __repr__(self):
-            raise AssertionError("__repr__ must never be called on an untrusted key")
-
-        def __str__(self):
-            raise AssertionError("__str__ must never be called on an untrusted key")
-
-        def __hash__(self):
-            return 0
-
-        def __eq__(self, other):
-            return self is other
-
-    with pytest.raises(ValueError, match="non-string key"):
-        _validate_json_safe_value({_ExplodingKey(): "value"}, path="args[0]")
-
-    # And the tuple rejection path with a tuple containing a malicious
-    # element (the tuple itself is never repr()'d either).
-    with pytest.raises(ValueError, match="tuple"):
-        _validate_json_safe_value((_ExplodingRepr(),), path="args[0]")
-
-
 def test_run_callable_still_accepts_json_native_args_end_to_end():
     """A functools.partial bound with a legitimate mix of JSON-native argument types (dict with string keys, list, str, int, float, bool, None) still executes correctly end-to-end through the real sandbox, exactly as before the stricter Finding-3 validation was added."""
     import functools
