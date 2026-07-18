@@ -152,3 +152,20 @@ def test_rejects_dict_key_whose_type_has_a_name_hooked_metaclass():
     rejection path, which also reports the offending type's name."""
     with pytest.raises(ValueError, match="non-string key"):
         _validate_json_safe_value({_HookedType(): "value"}, path="args[0]")
+
+
+def test_rejects_malicious_repr_value_nested_inside_a_list():
+    """A malicious-__repr__/__str__ value nested inside a list (not at the
+    top level) is still rejected without ever invoking those dunders --
+    proving the recursive descent into list elements is just as safe as
+    the top-level dispatch checked by ``test_rejects_malicious_repr_value``
+    above.
+
+    Moved here (and de-duplicated) from ``test_seatbelt.py``, which
+    exercised the same validator logic indirectly through
+    ``SeatbeltSandboxExecutor.run_callable`` -- a macOS-only integration
+    path that (via the module's skip marker) never ran this
+    platform-independent validator regression on Linux CI.
+    """
+    with pytest.raises(ValueError, match="not a JSON-native type"):
+        _validate_json_safe_value([1, _ExplodingRepr(), 3], path="args[0]")

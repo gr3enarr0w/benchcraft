@@ -279,59 +279,6 @@ def test_run_callable_rejects_nan_and_infinite_float_arguments(monkeypatch):
             executor.run_callable(partial_call)
 
 
-def test_run_callable_rejects_malicious_repr_value_without_calling_it(monkeypatch):
-    """A bound argument of a type _validate_json_safe_value must reject (nested inside a list, so the recursive validator actually visits it) is still correctly rejected with ValueError even when its __repr__/__str__ is malicious -- and, critically, that malicious __repr__/__str__ is never actually invoked while building the rejection error message.
-
-    This is the regression test for the CodeRabbit finding that the
-    rejection path itself must not call repr()/str() on the untrusted
-    value: doing so would invoke value.__repr__()/__str__() in this
-    trusted host process, which a malicious object could override to run
-    arbitrary code the moment validation tries to report that the value is
-    invalid.
-    """
-    import functools
-
-    import _callable_fixtures  # type: ignore[import-not-found]
-
-    class _ExplodingRepr:
-        """An object of a non-JSON-native type whose __repr__/__str__ raise
-        if ever invoked -- if _validate_json_safe_value's rejection path
-        called repr()/str() on the untrusted value, this would blow up with
-        AssertionError instead of a clean ValueError."""
-
-        def __repr__(self):
-            raise AssertionError(
-                "__repr__ must never be called on an untrusted value while "
-                "building a validation rejection message"
-            )
-
-        def __str__(self):
-            raise AssertionError(
-                "__str__ must never be called on an untrusted value while "
-                "building a validation rejection message"
-            )
-
-    _install_no_subprocess_no_tempdir_tripwires(
-        monkeypatch, reason="a value with a malicious __repr__/__str__"
-    )
-
-    executor = SeatbeltSandboxExecutor()
-    # Nested inside a list so the recursive validator actually descends into
-    # it (top-level args/kwargs values go through the same recursive
-    # function, but nesting also proves the recursion path is safe, not
-    # just the top-level dispatch).
-    partial_call = functools.partial(
-        _callable_fixtures.add_numbers, [1, _ExplodingRepr(), 3]
-    )
-
-    # If __repr__/__str__ were ever called on the bad value, it would raise
-    # AssertionError (from the class above) instead of this clean
-    # ValueError -- so a passing test proves both (a) it's still rejected,
-    # and (b) the malicious dunder methods were never invoked.
-    with pytest.raises(ValueError, match="not a JSON-native type"):
-        executor.run_callable(partial_call)
-
-
 def test_run_callable_still_accepts_json_native_args_end_to_end():
     """A functools.partial bound with a legitimate mix of JSON-native argument types (dict with string keys, list, str, int, float, bool, None) still executes correctly end-to-end through the real sandbox, exactly as before the stricter Finding-3 validation was added."""
     import functools
