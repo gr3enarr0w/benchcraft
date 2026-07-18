@@ -38,6 +38,26 @@ reviews:
         skip an entire tier of coverage (see the lazycore `dev` extra
         comment in packages/lazycore/pyproject.toml for the exact
         failure mode this project already hit once).
+    - path: "**"
+      instructions: >
+        Before finishing review of this PR, cross-reference the diff
+        against the "Part 4: Cross-Cutting Decisions Reference Table"
+        in Benchcraft_Unified_Architecture.md (rows marked "Locked" or
+        "Locked (excluded)"). Flag, as a scope-alignment concern
+        distinct from ordinary code-quality comments, any change that:
+        (1) introduces a shared LLM router, multi-provider abstraction,
+        or `BaseTarget`-style interface across modules; (2) adds a
+        formal typed inter-module data contract/manifest (MLflow
+        "flavors"-style) before two real modules exchange data through
+        it; (3) adds module-specific business logic to
+        `packages/lazycore/` instead of keeping it limited to the
+        shared data-tier/OTel/license/sandbox conventions in Part 2;
+        (4) adds a cloud/remote-serving deployment path, remote
+        inference endpoint, or a red-teaming/agent-eval target that
+        isn't local; or (5) implements any part of LazyEdge (edge/
+        microcontroller compilation), which is fully deferred and
+        roadmap-only. This is in addition to, not a replacement for,
+        the path-specific review guidance above.
 
   # Pre-merge quality gates shown on every PR.
   pre_merge_checks:
@@ -54,9 +74,27 @@ reviews:
       # for docstring coverage specifically (unlike an actual failing
       # test, a docstring gap is a style issue, not a correctness one).
       threshold: 85
-    # "Linked issues" and "out of scope changes" pre-merge checks are
-    # already on by CodeRabbit's own defaults; no config needed to keep
-    # them enabled.
+    # The built-in "issue_assessment" pre-merge check (labeled "Linked
+    # issues / Out of Scope Changes" in the PR UI) is already on by
+    # CodeRabbit's own defaults; no config key is needed to keep it
+    # enabled, and there is no separate "out_of_scope_changes" key in
+    # CodeRabbit's schema -- it's all one check under issue_assessment.
+    # Today it always reports "skipped because no linked issues were
+    # found," because its real mechanism is diffing a PR's changes
+    # against the scope described in a *linked GitHub Issue* -- it has
+    # nothing to compare against otherwise. This repo does not currently
+    # link PRs to issues. Actually activating it is available as an
+    # OPTIONAL workflow change (not applied here, since it's a process
+    # decision, not a config default to force): file a GitHub Issue per
+    # unit of work describing intended scope, then link the PR to that
+    # issue (e.g. "Closes #12" in the PR description, or GitHub's
+    # sidebar linker). Once a PR has a linked issue, this check compares
+    # the diff against the issue's stated scope and will actually fire
+    # instead of skipping. The custom_checks entries below are the
+    # complementary mechanism that works today, without issues: they
+    # check the diff against the locked decisions written directly into
+    # Benchcraft_Unified_Architecture.md, rather than against a
+    # per-PR issue description.
     #
     # Custom check: nothing in CodeRabbit's schema can literally run
     # pytest (that's what .github/workflows/test.yml is for), but this
@@ -78,6 +116,46 @@ reviews:
           needed (e.g. "covered by existing test X"). Otherwise fail
           with a note identifying which src files lack a corresponding
           test change.
+      # Second, independent custom check: architectural scope alignment
+      # against the locked v1 decisions in
+      # Benchcraft_Unified_Architecture.md Part 4. This approximates
+      # "does this PR match the project's purpose" as five concrete,
+      # diff-checkable yes/no conditions -- CodeRabbit cannot judge
+      # holistic "purpose" alignment, but it can check for these
+      # specific, named regressions against decisions the architecture
+      # doc explicitly marks "Locked" or "Locked (excluded)".
+      - name: "No scope-locked architecture violations"
+        mode: warning
+        instructions: >
+          Read Benchcraft_Unified_Architecture.md Part 4 (Cross-Cutting
+          Decisions Reference Table) if present in the repo. Fail this
+          check, quoting the specific rows violated, if the PR diff
+          does any of the following: (1) adds a shared LLM router,
+          multi-provider LLM abstraction, or a `BaseTarget`/router-style
+          base class or interface meant to be shared across more than
+          one module -- each module must take a bare "bring your own
+          local model handle" approach instead; (2) adds a new formal,
+          typed inter-module data contract, shared manifest schema, or
+          MLflow-"flavors"-style interface between two Benchcraft
+          modules -- this is deferred until at least two real modules
+          need to exchange data, not something to build preemptively;
+          (3) adds code under packages/lazycore/ that implements logic
+          specific to one non-lazycore module (e.g. AutoML-only,
+          LazyVision-only, or LazyRed-only behavior) rather than a
+          shared data-tier/OTel-schema/license-policy/sandbox-executor
+          convention documented in Part 2 -- lazycore must stay thin;
+          (4) adds a cloud deployment target, a remote/hosted inference
+          endpoint, or a non-local execution path for any module,
+          including for LazyRed/LazyAgent red-teaming or agent-eval
+          targets -- v1 is local-only, MPS-primary, with Linux+CUDA as
+          an unvalidated secondary target only; or (5) adds any
+          implementation code (not just comments/docs) for LazyEdge
+          (edge/microcontroller compilation) -- LazyEdge is fully
+          deferred, roadmap-only, and not to be built. Pass if none of
+          these five conditions apply to the diff. If
+          Benchcraft_Unified_Architecture.md is not present in the
+          diff or repo context, state that explicitly and pass with a
+          note rather than failing blind.
 
   # markdownlint already flagged a real issue in an earlier PR via
   # CodeRabbit's default tool detection; declared explicitly here so that
@@ -114,6 +192,26 @@ code_generation:
         instructions: >
           Do not generate unit tests for example/demo scripts.
 
+# CodeRabbit's knowledge_base.code_guidelines feature auto-detects a
+# fixed list of convention filenames (CLAUDE.md, AGENTS.md, .cursorrules,
+# etc.) when filePatterns is left empty, which is how it already cites
+# CLAUDE.md as "learnings" in review comments today. Setting filePatterns
+# explicitly here does two things: (1) keeps CLAUDE.md as an explicit
+# review-criteria source rather than relying on undocumented-in-repo
+# auto-detection, and (2) adds Benchcraft_Unified_Architecture.md as an
+# explicit knowledge source too -- CodeRabbit's default auto-detected
+# filename list does not include it, so without this it would only be
+# reachable via the path_instructions/custom_checks text above asking
+# the reviewer model to go read it, not via the knowledge-base ingestion
+# path. This is additive: nothing here removes the CLAUDE.md coverage
+# that was previously implicit.
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/CLAUDE.md"
+      - "Benchcraft_Unified_Architecture.md"
+
 chat:
   auto_reply: true
 
@@ -148,7 +246,10 @@ chat:
 # - knowledge_base.learnings.scope: left at its default ("auto", which
 #   resolves to "local" for this public repo) -- that's already the
 #   correct behavior for a single-repo, not-yet-multi-repo project.
-# - knowledge_base.code_guidelines: left at its default (enabled: true,
-#   auto-detecting convention files like CLAUDE.md) since that default
-#   already explains the "Based on learnings" reference CodeRabbit
-#   produced during today's reviews; no override needed.
+# - knowledge_base.code_guidelines: previously left at its default
+#   (enabled: true, auto-detecting convention files like CLAUDE.md),
+#   which explained the "Based on learnings" reference CodeRabbit
+#   produced during earlier reviews. Now set explicitly above (still
+#   enabled: true) to add Benchcraft_Unified_Architecture.md as an
+#   additional knowledge source for architecture-scope-alignment
+#   review, alongside CLAUDE.md rather than instead of it.
