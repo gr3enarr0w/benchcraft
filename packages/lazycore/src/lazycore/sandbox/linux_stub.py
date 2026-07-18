@@ -20,9 +20,12 @@ were real would be worse than not shipping it. This class exists only to:
 1. Satisfy :class:`~lazycore.sandbox.base.BaseSandboxExecutor`'s interface,
    so callers can reference it and `get_default_executor()` can dispatch to
    it on Linux without an import error.
-2. Detect, at runtime, whether the host *could* plausibly support a real
-   namespace-based backend (presence of `unshare`/`bwrap` or similar), via
-   :meth:`is_available`.
+2. Honestly report, via :meth:`is_available`, that it is never usable --
+   always ``False``, on every platform, regardless of whether a namespace-
+   sandboxing helper (`unshare`/`bwrap` or similar) happens to be present.
+   Presence of such a helper says something about the *host*, not about
+   this *stub*, which never execs those helpers and has no real backend
+   behind it to report as available.
 3. Raise a clear, documented error on any actual use, rather than silently
    pretending to sandbox anything.
 
@@ -47,10 +50,15 @@ from lazycore.sandbox.base import (
 __all__ = ["LinuxNamespaceSandboxExecutor"]
 
 #: Helper binaries a real namespace-based backend would depend on
-#: (bubblewrap's `bwrap`, or raw `unshare` from util-linux). Their presence
-#: is used only to answer "could this host plausibly run a real backend
-#: some day", not to actually invoke them -- this stub never execs
-#: anything.
+#: (bubblewrap's `bwrap`, or raw `unshare` from util-linux). Documented here
+#: for whoever implements the real backend -- **not** consulted by
+#: :meth:`LinuxNamespaceSandboxExecutor.is_available`, which always returns
+#: ``False`` regardless of helper presence, since this stub never execs
+#: anything and has no real availability to report. An earlier version of
+#: this module used this tuple (via ``shutil.which``) to make
+#: ``is_available()`` return ``True`` when a helper was found on ``PATH``;
+#: that was itself the bug this stub now avoids -- see
+#: :meth:`LinuxNamespaceSandboxExecutor.is_available`'s docstring.
 _LINUX_SANDBOX_HELPERS = ("bwrap", "unshare")
 
 
@@ -64,14 +72,29 @@ class LinuxNamespaceSandboxExecutor(BaseSandboxExecutor):
     """
 
     def is_available(self) -> bool:
-        """True only if this looks like a Linux host with a plausible
-        namespace-sandboxing helper installed. This does **not** mean the
-        backend is implemented -- it only means the host isn't immediately
-        disqualified. Always False on macOS (this development machine).
+        """Always False -- this backend is a documented stub, not a real one.
+
+        Per :meth:`~lazycore.sandbox.base.BaseSandboxExecutor.is_available`'s
+        contract, ``True`` is supposed to mean "this backend can actually
+        run on this host". That is never true here: every actual execution
+        method (:meth:`run_command`, :meth:`run_callable`) unconditionally
+        raises :class:`SandboxBackendUnavailableError` regardless of what
+        this method reports, because no real namespace/gVisor/Firecracker
+        backend has been implemented (see the module docstring for why).
+        Presence of a helper binary such as ``bwrap``/``unshare`` on
+        ``PATH`` says something about whether the *host* could plausibly
+        run a real backend some day -- it says nothing about whether *this
+        stub* can, since this stub never execs those helpers at all. An
+        earlier version of this method returned ``True`` when such a helper
+        was found, which broke the ``is_available()`` API contract: a
+        caller that checks ``is_available()`` before deciding whether to
+        run something would get a false "yes" on a Linux host with
+        ``bwrap`` installed, then crash on the very next call with
+        :class:`SandboxBackendUnavailableError`. Always returning ``False``
+        here makes this class honest about being unusable, on every
+        platform, until a real backend is implemented.
         """
-        if platform.system() != "Linux":
-            return False
-        return any(shutil.which(tool) is not None for tool in _LINUX_SANDBOX_HELPERS)
+        return False
 
     def _unavailable(self) -> SandboxBackendUnavailableError:
         return SandboxBackendUnavailableError(

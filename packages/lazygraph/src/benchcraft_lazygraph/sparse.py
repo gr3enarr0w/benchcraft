@@ -132,8 +132,8 @@ class PyGSparseAdapter(SparseGraphTensorAdapter):
                 ``edge_index`` does not have shape ``[2, num_edges]``; if
                 ``edge_index`` has a non-integer dtype; if any node index in
                 ``edge_index`` falls outside ``[0, num_nodes)``; or if
-                ``edge_weight`` is provided and its length does not match
-                the number of edges.
+                ``edge_weight`` is provided and is not a 1-D tensor, or its
+                length does not match the number of edges.
         """
         import torch
 
@@ -168,6 +168,12 @@ class PyGSparseAdapter(SparseGraphTensorAdapter):
                     f"num_nodes={num_nodes}, but found offending value "
                     f"{offending}"
                 )
+
+        if edge_weight is not None and edge_weight.dim() != 1:
+            raise ValueError(
+                f"edge_weight must be a 1-D tensor of per-edge weights, got "
+                f"shape {tuple(edge_weight.shape)}"
+            )
 
         if edge_weight is not None and edge_weight.shape[0] != num_edges:
             raise ValueError(

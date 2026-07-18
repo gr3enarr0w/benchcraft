@@ -21,7 +21,6 @@ free.
 from __future__ import annotations
 
 import enum
-import hashlib
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -73,12 +72,20 @@ ATTR_ML_METRIC_ACCURACY = f"{ATTR_ML_METRIC_PREFIX}accuracy"
 ATTR_GENAI_EVENT_ROLE = "gen_ai.event.role"
 ATTR_GENAI_EVENT_CONTENT = "gen_ai.event.content"
 
-#: Metadata-only attribute keys used by :func:`add_transcript_event`'s
-#: safe-by-default path (no raw content attached): the content's length and
-#: a SHA-256 hash, so a caller/operator can still correlate/deduplicate
-#: transcript turns across an exported trace without the raw text (prompts,
-#: tool output, credentials, PII, etc.) ever leaving the process.
+#: Metadata-only attribute key used by :func:`add_transcript_event`'s
+#: safe-by-default path (no raw content attached): the content's length,
+#: so a caller/operator can still get a coarse signal about a transcript
+#: turn across an exported trace without the raw text (prompts, tool
+#: output, credentials, PII, etc.) ever leaving the process.
 ATTR_GENAI_EVENT_CONTENT_LENGTH = "gen_ai.event.content.length"
+
+#: Reserved for a possible future *opt-in, keyed* content-correlation
+#: attribute (e.g. an HMAC). :func:`add_transcript_event` never sets this
+#: itself -- an earlier version of this module attached an *unsalted*
+#: SHA-256 hash of ``content`` here by default, which was a real leak
+#: vector (see that function's docstring) and has been removed. The name
+#: stays defined and reserved (so ``extra_attributes`` still can't spoof
+#: it) purely for forward/backward attribute-key stability.
 ATTR_GENAI_EVENT_CONTENT_SHA256 = "gen_ai.event.content.sha256"
 
 
@@ -222,21 +229,76 @@ def add_transcript_event(
       or a pipeline stage the caller has already sanitized upstream).
 
     When neither is given (the default), no raw or sanitized text is
-    attached at all -- only metadata that still lets an operator correlate
-    transcript turns across an exported trace without ever exporting the
-    text itself: :data:`ATTR_GENAI_EVENT_CONTENT_LENGTH` (``len(content)``)
-    and :data:`ATTR_GENAI_EVENT_CONTENT_SHA256` (a SHA-256 hex digest of
-    ``content``, encoded as UTF-8).
+    attached at all -- only :data:`ATTR_GENAI_EVENT_CONTENT_LENGTH`
+    (``len(content)``). No content hash of any kind is attached by default.
+
+    **Why no default hash.** An earlier version of this function attached
+    an *unsalted* SHA-256 hash of ``content`` (:data:`ATTR_GENAI_EVENT_CONTENT_SHA256`)
+    alongside the length, reasoning that a hash alone couldn't leak the
+    original text. That reasoning was wrong on two counts, and this
+    function no longer does it:
+
+    1. **Correlation without plaintext is still a leak.** Two spans/traces
+       carrying the same unsalted hash are provably carrying the same
+       underlying content -- an observer can conclude "this run's prompt
+       is identical to a known-sensitive one" without ever seeing either
+       plaintext.
+    2. **Unsalted/un-keyed SHA-256 is reversible for guessable input.**
+       Prompts, tool output, and credential-shaped strings are frequently
+       low-entropy or drawn from a small/known space (common phrases,
+       known secret formats, short strings). SHA-256 is fast to compute
+       and offers no protection against a dictionary/brute-force attack
+       recovering the plaintext from the hash when the input space is
+       guessable -- it needs a secret salt/key to resist that, which a
+       bare ``hashlib.sha256(content)`` call does not have.
+
+    A correlation-safe version of this feature would require an *opt-in*,
+    caller-supplied secret key (HMAC-SHA256 rather than a bare hash), so
+    only someone holding that key could link two hashes to the same
+    content. This module deliberately does not add that parameter yet:
+    lazycore is still scaffold-depth, no module currently needs
+    cross-trace content correlation, and an unused opt-in knob is exactly
+    the kind of speculative surface area this repo's conventions ask
+    contributors to avoid. If a real need for keyed correlation shows up
+    in LazyRed/LazyAgent, add a ``correlation_key`` parameter that computes
+    ``hmac.new(key, content.encode(...), hashlib.sha256)`` and attaches it
+    under :data:`ATTR_GENAI_EVENT_CONTENT_SHA256` only when the key is
+    explicitly supplied -- not as a default-on hash.
 
     This is a behavior change from an earlier version of this function,
-    which always attached ``content`` verbatim. Every caller in *this*
-    package's own tests has been updated to pass ``include_raw_content=True``
-    where a test genuinely needs to assert on the recorded content; callers
-    in other Benchcraft packages (LazyRed, LazyAgent) must make the same
-    explicit choice deliberately once they adopt this signature -- this
-    function does not, and should not, guess on their behalf.
+    which always attached ``content`` verbatim, and from a more recent
+    version that attached an unsalted SHA-256 hash by default. Every
+    caller in *this* package's own tests has been updated to pass
+    ``include_raw_content=True`` where a test genuinely needs to assert on
+    the recorded content; callers in other Benchcraft packages (LazyRed,
+    LazyAgent) must make the same explicit choice deliberately once they
+    adopt this signature -- this function does not, and should not, guess
+    on their behalf.
+
+    **Reserved attribute keys.** ``extra_attributes`` may not set any of the
+    attribute keys this function itself manages (:data:`ATTR_GENAI_EVENT_ROLE`,
+    :data:`ATTR_GENAI_EVENT_CONTENT`, :data:`ATTR_GENAI_EVENT_CONTENT_LENGTH`,
+    :data:`ATTR_GENAI_EVENT_CONTENT_SHA256`) -- doing so raises ``ValueError``.
+    Without this check, a caller-supplied ``extra_attributes`` entry could
+    silently overwrite (e.g.) ``gen_ai.event.content`` with an arbitrary
+    value once merged into the final attributes dict, completely bypassing
+    the safe-by-default redaction contract documented above.
     """
-    attributes: dict[str, Any] = {ATTR_GENAI_EVENT_ROLE: role}
+    reserved_attributes = {
+        ATTR_GENAI_EVENT_ROLE,
+        ATTR_GENAI_EVENT_CONTENT,
+        ATTR_GENAI_EVENT_CONTENT_LENGTH,
+        ATTR_GENAI_EVENT_CONTENT_SHA256,
+    }
+    colliding_keys = reserved_attributes.intersection(extra_attributes)
+    if colliding_keys:
+        raise ValueError(
+            "extra_attributes may not set reserved attribute key(s): "
+            f"{sorted(colliding_keys)}"
+        )
+
+    attributes: dict[str, Any] = dict(extra_attributes)
+    attributes[ATTR_GENAI_EVENT_ROLE] = role
 
     if sanitizer is not None:
         attributes[ATTR_GENAI_EVENT_CONTENT] = sanitizer(content)
@@ -244,9 +306,5 @@ def add_transcript_event(
         attributes[ATTR_GENAI_EVENT_CONTENT] = content
     else:
         attributes[ATTR_GENAI_EVENT_CONTENT_LENGTH] = len(content)
-        attributes[ATTR_GENAI_EVENT_CONTENT_SHA256] = hashlib.sha256(
-            content.encode("utf-8", errors="replace")
-        ).hexdigest()
 
-    attributes.update(extra_attributes)
     span.add_event(name="gen_ai.content", attributes=attributes)

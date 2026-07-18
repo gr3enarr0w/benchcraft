@@ -26,3 +26,12 @@ def add_numbers(a: int, b: int = 0) -> int:
     run_callable()'s functools.partial + JSON-serializable-args calling
     convention (Finding 2 fix)."""
     return a + b
+
+
+def describe_payload(data: dict, tags: list, note: str, count: int, ratio: float, flag: bool, empty: object) -> str:
+    """Return a deterministic repr() of every argument, used to confirm
+    end-to-end that a legitimate mix of JSON-native argument types (dict
+    with string keys, list, str, int, float, bool, None) still round-trips
+    correctly through run_callable()'s stricter args/kwargs validation
+    (Finding 3 fix)."""
+    return repr((data, tags, note, count, ratio, flag, empty))

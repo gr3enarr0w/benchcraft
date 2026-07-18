@@ -36,11 +36,13 @@ from lazycore.sandbox.linux_stub import LinuxNamespaceSandboxExecutor
     reason=(
         "This test asserts real non-Linux host behavior (is_available() "
         "is False because platform.system() != 'Linux' on the actual "
-        "host); it is not meaningful on a real Linux host, where "
-        "is_available() legitimately depends on whether bwrap/unshare are "
-        "installed. See test_is_available_reflects_helper_presence_on_linux "
-        "(monkeypatched) for the platform-independent unit-level check of "
-        "the stub's Linux dispatch logic."
+        "host); it is redundant, though not wrong, on a real Linux host, "
+        "where is_available() is also always False -- this stub is never "
+        "usable regardless of platform. See "
+        "test_is_available_is_always_false_on_linux_regardless_of_helper_presence "
+        "(monkeypatched) for the platform-independent unit-level check that "
+        "covers the Linux branch specifically, including both the "
+        "helper-absent and helper-present cases."
     ),
 )
 def test_is_available_is_false_on_a_real_non_linux_machine():
@@ -56,24 +58,26 @@ def test_is_available_is_false_when_platform_is_not_linux(monkeypatch):
     assert executor.is_available() is False
 
 
-def test_is_available_reflects_helper_presence_on_linux(monkeypatch):
-    """When platform.system() reports "Linux", is_available() reflects whether a namespace-sandboxing helper (bwrap/unshare) is present on PATH -- exercised here via monkeypatching both platform.system() and shutil.which() so this passes on any host, including this macOS machine."""
+def test_is_available_is_always_false_on_linux_regardless_of_helper_presence(monkeypatch):
+    """When platform.system() reports "Linux", is_available() is always False -- both when no namespace-sandboxing helper (bwrap/unshare) is present on PATH, and when one is -- because this backend is an intentional, documented, unimplemented stub: every actual execution method (run_command/run_callable) always raises SandboxBackendUnavailableError regardless of what is_available() reports, so helper presence alone must never make is_available() report True. Exercised here via monkeypatching both platform.system() and shutil.which() so this passes on any host, including this macOS machine."""
     import lazycore.sandbox.linux_stub as linux_stub_module
 
     monkeypatch.setattr(platform, "system", lambda: "Linux")
 
-    # No helper present -> not available, even though platform is "Linux".
+    # No helper present -> not available.
     monkeypatch.setattr(linux_stub_module.shutil, "which", lambda tool: None)
     executor = LinuxNamespaceSandboxExecutor()
     assert executor.is_available() is False
 
-    # A helper present -> available.
+    # A helper present -> still not available: presence of bwrap/unshare on
+    # PATH says something about the host, not about this stub, which never
+    # execs those helpers and has no real backend behind it.
     monkeypatch.setattr(
         linux_stub_module.shutil,
         "which",
         lambda tool: f"/usr/bin/{tool}" if tool == "bwrap" else None,
     )
-    assert executor.is_available() is True
+    assert executor.is_available() is False
 
 
 def test_run_command_raises_documented_unavailable_error():

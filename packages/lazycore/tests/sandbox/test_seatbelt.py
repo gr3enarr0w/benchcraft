@@ -184,6 +184,170 @@ def test_run_callable_rejects_unpicklable_lambda():
         executor.run_callable(lambda: 1)
 
 
+def test_run_callable_rejects_tuple_bound_argument(monkeypatch):
+    """A functools.partial whose bound args include a tuple raises a clear ValueError before anything is written to disk or executed -- json.dumps() would otherwise silently coerce the tuple into a JSON array indistinguishable from a list, so the sandboxed child would reconstruct a list where a tuple was actually passed (Finding 3 fix)."""
+    import functools
+
+    import _callable_fixtures  # type: ignore[import-not-found]
+
+    # If _decompose_callable's validation were bypassed, run_command()
+    # would go on to invoke subprocess.run() (via sandbox-exec) -- fail
+    # loudly if that ever happens, so this test actually proves nothing
+    # was written to disk or executed, not just that *a* ValueError was
+    # raised somewhere.
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "subprocess.run() must not be invoked once argument validation "
+            "has rejected a tuple bound argument"
+        )
+
+    monkeypatch.setattr(
+        "lazycore.sandbox.seatbelt.subprocess.run", _fail_if_called
+    )
+
+    executor = SeatbeltSandboxExecutor()
+    partial_call = functools.partial(_callable_fixtures.add_numbers, (1, 2, 3))
+
+    with pytest.raises(ValueError, match="tuple"):
+        executor.run_callable(partial_call)
+
+
+def test_run_callable_rejects_dict_with_non_string_key(monkeypatch):
+    """A dict argument with a non-string key (e.g. {1: "a"}) is rejected the same way tuples are -- json.dumps() would otherwise silently stringify the key, changing what the sandboxed child actually sees relative to what was passed (Finding 3 fix)."""
+    import functools
+
+    import _callable_fixtures  # type: ignore[import-not-found]
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "subprocess.run() must not be invoked once argument validation "
+            "has rejected a dict with a non-string key"
+        )
+
+    monkeypatch.setattr(
+        "lazycore.sandbox.seatbelt.subprocess.run", _fail_if_called
+    )
+
+    executor = SeatbeltSandboxExecutor()
+    partial_call = functools.partial(_callable_fixtures.add_numbers, {1: "a"})
+
+    with pytest.raises(ValueError, match="non-string key"):
+        executor.run_callable(partial_call)
+
+
+def test_run_callable_rejects_nan_and_infinite_float_arguments(monkeypatch):
+    """A float("nan") or float("inf") argument is rejected with ValueError instead of being silently written as non-standard JSON (allow_nan=False fix, Finding 3)."""
+    import functools
+
+    import _callable_fixtures  # type: ignore[import-not-found]
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "subprocess.run() must not be invoked once argument validation "
+            "has rejected a NaN/Infinity float"
+        )
+
+    monkeypatch.setattr(
+        "lazycore.sandbox.seatbelt.subprocess.run", _fail_if_called
+    )
+
+    executor = SeatbeltSandboxExecutor()
+
+    for bad_value in (float("nan"), float("inf"), float("-inf")):
+        partial_call = functools.partial(_callable_fixtures.add_numbers, bad_value)
+        with pytest.raises(ValueError):
+            executor.run_callable(partial_call)
+
+
+def test_run_callable_still_accepts_json_native_args_end_to_end():
+    """A functools.partial bound with a legitimate mix of JSON-native argument types (dict with string keys, list, str, int, float, bool, None) still executes correctly end-to-end through the real sandbox, exactly as before the stricter Finding-3 validation was added."""
+    import functools
+
+    import _callable_fixtures  # type: ignore[import-not-found]
+
+    executor = SeatbeltSandboxExecutor()
+    policy = SandboxPolicy(
+        inherit_env=True,
+        env={"PYTHONPATH": _FIXTURES_DIR},
+        allowed_read_paths=(_FIXTURES_DIR,),
+    )
+
+    data = {"key": "value", "nested": {"inner": 1}}
+    tags = ["a", "b", 3]
+    partial_call = functools.partial(
+        _callable_fixtures.describe_payload,
+        data,
+        tags,
+        "hello",
+        7,
+        3.5,
+        True,
+        None,
+    )
+
+    result = executor.run_callable(partial_call, policy=policy)
+
+    # The runner script writes repr(result) to stdout (see run_callable()'s
+    # docstring) -- describe_payload() itself returns a str, so the
+    # expected stdout is repr() of *that* string, i.e. a double repr.
+    expected_return_value = repr((data, tags, "hello", 7, 3.5, True, None))
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == repr(expected_return_value)
+
+
+def test_run_callable_with_restrictive_allowed_executables_succeeds():
+    """Regression test: run_callable() must still succeed when the caller's
+    policy sets a non-empty allowed_executables that does NOT itself list
+    sys.executable (e.g. a policy meant to restrict the *target* command to
+    just "cat"). Before the fix, run_callable() built effective_policy by
+    extending only allowed_read_paths, leaving allowed_executables exactly
+    as the caller set it -- so its own internal
+    `sys.executable <runner> <payload>` invocation was denied by the very
+    restrictive process-exec rule the caller's policy requested, and
+    run_callable() failed unconditionally for *any* caller who set a
+    non-empty allowed_executables, regardless of intent."""
+    import _callable_fixtures  # type: ignore[import-not-found]
+
+    executor = SeatbeltSandboxExecutor()
+    policy = SandboxPolicy(
+        inherit_env=True,
+        env={"PYTHONPATH": _FIXTURES_DIR},
+        allowed_read_paths=(_FIXTURES_DIR,),
+        # Deliberately does NOT include sys.executable -- if run_callable()
+        # failed to extend this internally, sandbox-exec would deny the
+        # runner's own `python <runner.py> <payload.json>` exec attempt.
+        allowed_executables=("cat",),
+    )
+
+    result = executor.run_callable(_callable_fixtures.compute_answer, policy=policy)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == "42"
+
+
+def test_run_callable_with_empty_allowed_executables_is_unaffected():
+    """No-regression check: the default, empty allowed_executables (meaning
+    "process-exec is unrestricted") must remain unrestricted after the fix
+    -- run_callable() must not add sys.executable to an empty tuple, which
+    would silently turn "no restriction" into "restricted to only this one
+    executable" and could affect any *other* process-exec the sandboxed
+    child might legitimately need to perform."""
+    import _callable_fixtures  # type: ignore[import-not-found]
+
+    executor = SeatbeltSandboxExecutor()
+    policy = SandboxPolicy(
+        inherit_env=True,
+        env={"PYTHONPATH": _FIXTURES_DIR},
+        allowed_read_paths=(_FIXTURES_DIR,),
+    )
+    assert policy.allowed_executables == ()
+
+    result = executor.run_callable(_callable_fixtures.compute_answer, policy=policy)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == "42"
+
+
 def test_bare_executable_name_resolves_via_path_and_is_actually_usable():
     """A bare (no-path) allowed_executables entry like "touch" is resolved via PATH (not against CWD) and the resulting profile actually permits running the real executable -- regression test for the finding that _canonical("python3")-style resolution silently produced a bogus <cwd>/touch path that could never match the real binary."""
     import shutil

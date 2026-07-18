@@ -199,6 +199,19 @@ def test_mismatched_edge_weight_length_rejected():
         )
 
 
+def test_non_1d_edge_weight_rejected():
+    """An `edge_weight` tensor with the right length but the wrong number
+    of dimensions (e.g. shape `(num_edges, 1)`) must be rejected at
+    construction time rather than silently broadcasting during SciPy
+    conversion or `GCNConv` execution."""
+    edge_index = _valid_edge_index()
+    two_d_weight = torch.ones(len(EDGES), 1, dtype=torch.float32)
+    with pytest.raises(ValueError, match="edge_weight"):
+        PyGSparseAdapter.from_edge_index(
+            edge_index, num_nodes=NUM_NODES, edge_weight=two_d_weight
+        )
+
+
 def test_matching_edge_weight_length_accepted():
     """A correctly-sized `edge_weight` is accepted and preserved."""
     edge_index = _valid_edge_index()

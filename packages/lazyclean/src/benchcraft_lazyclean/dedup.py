@@ -155,6 +155,10 @@ def find_near_duplicates(embeddings: np.ndarray, *, threshold: float = 0.92) -> 
     """
     if not (0.0 < threshold <= 1.0):
         raise ValueError(f"threshold must be in (0.0, 1.0], got {threshold!r}.")
+    if embeddings.ndim != 2:
+        raise ValueError(f"Expected a 2D (n_rows, dim) array, got shape {embeddings.shape!r}.")
+    if not np.isfinite(embeddings).all():
+        raise ValueError("embeddings must contain only finite values")
 
     num_rows = embeddings.shape[0]
     norms = np.linalg.norm(embeddings, axis=1)

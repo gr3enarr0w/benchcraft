@@ -167,6 +167,36 @@ def test_find_near_duplicates_rejects_bad_threshold():
         find_near_duplicates(embeddings, threshold=1.5)
 
 
+def test_find_near_duplicates_rejects_non_2d_input_with_clear_error():
+    """A 1-D embeddings array raises a clear ValueError from
+    find_near_duplicates() itself -- not a confusing error surfaced later
+    from inside np.linalg.norm(embeddings, axis=1, ...)."""
+    embeddings = np.zeros(5, dtype=np.float32)
+    with pytest.raises(ValueError, match="2D"):
+        find_near_duplicates(embeddings, threshold=NEAR_DUP_THRESHOLD)
+
+
+def test_find_near_duplicates_rejects_non_finite_values():
+    """A row containing NaN or Inf raises ValueError rather than silently
+    producing NaN similarities that get skipped by the near-duplicate scan
+    while also being absent from zero_vector_row_indices -- which would
+    otherwise make a NaN/Inf row indistinguishable from a row that was
+    normally, successfully compared."""
+    nan_embeddings = np.array(
+        [[1.0, 0.0], [np.nan, 0.0], [0.0, 1.0]],
+        dtype=np.float32,
+    )
+    with pytest.raises(ValueError, match="finite"):
+        find_near_duplicates(nan_embeddings, threshold=NEAR_DUP_THRESHOLD)
+
+    inf_embeddings = np.array(
+        [[1.0, 0.0], [np.inf, 0.0], [0.0, 1.0]],
+        dtype=np.float32,
+    )
+    with pytest.raises(ValueError, match="finite"):
+        find_near_duplicates(inf_embeddings, threshold=NEAR_DUP_THRESHOLD)
+
+
 def test_find_near_duplicates_flags_the_near_duplicate_pair(model):
     """End-to-end via the synthetic model: the near-duplicate ROWS[0]/ROWS[1]
     pair is flagged above threshold, and the unrelated ROWS[2] is not."""

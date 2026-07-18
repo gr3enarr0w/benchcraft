@@ -353,6 +353,151 @@ def _reject_overbroad_allowed_path(path: str, *, kind: str) -> str:
     return resolved_str
 
 
+def _validate_json_safe_value(value: object, *, path: str) -> None:
+    """Recursively validate that ``value`` contains only genuinely
+    JSON-native types, for use before ``run_callable()`` writes bound
+    ``functools.partial`` arguments to the payload file the sandboxed
+    child reads (Finding 3 fix).
+
+    ``json.dumps()`` on its own is too permissive for this security
+    boundary: it *coerces* rather than rejects several Python types on
+    encode, so "it round-tripped through ``json.dumps``/``json.load``
+    without an exception" is not the same guarantee as "the sandboxed
+    child sees exactly the value the caller passed". Concretely:
+
+    - A ``tuple`` serializes to a JSON array **indistinguishable** from a
+      ``list`` -- the child's ``json.load()`` always reconstructs a
+      ``list``, so a caller who bound a tuple argument via
+      ``functools.partial`` would silently have it replaced with a list
+      of the same elements inside the sandbox: a different runtime
+      type/value than what was actually requested, for what may be a
+      security- or correctness-sensitive call.
+    - A non-``str`` dict key (e.g. an ``int`` key) is silently stringified
+      by ``json.dumps`` (``{1: "a"}`` becomes ``{"1": "a"}`` on the wire),
+      again changing what the child actually receives relative to what
+      the caller specified.
+
+    This function walks ``value`` and only accepts ``str``, ``int``,
+    ``float``, ``bool``, ``None``, ``list`` (recursing into elements), and
+    ``dict`` with string-only keys (recursing into values) -- explicitly
+    rejecting ``tuple`` (even though ``json.dumps`` happily accepts it),
+    any non-``str`` dict key, and any other type (``set``, custom class
+    instances, etc.).
+
+    NaN/Infinity/-Infinity floats are deliberately *not* rejected here --
+    plain ``float`` is a legitimate JSON-native scalar type, and
+    ``json.dumps(..., allow_nan=False)`` (used at the actual serialization
+    call sites, see :func:`_validate_run_callable_arguments`) already
+    raises ``ValueError`` for those specific values with a clear message.
+    Duplicating that check here would just be two ways to catch the same
+    thing.
+
+    Args:
+        value: The (sub)value to validate.
+        path: A human-readable description of ``value``'s location within
+            the overall ``args``/``kwargs`` structure, used to build a
+            precise error message (e.g. ``"args[0]"``, ``"kwargs['x'][2]"``).
+
+    Raises:
+        ValueError: If ``value`` (or anything nested inside it) is a
+            ``tuple``, a ``dict`` with a non-``str`` key, or any other
+            non-JSON-native type.
+    """
+    if value is None or type(value) in (str, int, float, bool):
+        return
+
+    if type(value) is list:
+        for index, item in enumerate(value):
+            _validate_json_safe_value(item, path=f"{path}[{index}]")
+        return
+
+    if type(value) is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ValueError(
+                    f"{path} has a non-string key {key!r} (type "
+                    f"{type(key).__name__!r}). run_callable() rejects this "
+                    "instead of letting json.dumps() silently stringify it "
+                    '(e.g. turning {1: ...} into {"1": ...} on the wire) -- '
+                    "that would change what key the sandboxed child "
+                    "actually sees relative to what was passed. Use only "
+                    "string keys."
+                )
+            _validate_json_safe_value(item, path=f"{path}[{key!r}]")
+        return
+
+    if isinstance(value, tuple):
+        raise ValueError(
+            f"{path} is a tuple ({value!r}). run_callable() rejects tuple "
+            "arguments instead of letting json.dumps() silently coerce "
+            "them into a JSON array indistinguishable from a list -- the "
+            "sandboxed child's json.load() always reconstructs a list, so "
+            "it would receive a different runtime type than the one "
+            "actually passed. Convert it to a list explicitly if a list is "
+            "what you intend the child to receive."
+        )
+
+    raise ValueError(
+        f"{path} is of type {type(value).__name__!r} ({value!r}), which is "
+        "not a JSON-native type. run_callable() only supports str, int, "
+        "float, bool, None, list, and dict (with string keys) for "
+        "functools.partial bound arguments."
+    )
+
+
+def _validate_run_callable_arguments(
+    args: Sequence[object],
+    kwargs: dict[str, object],
+    module_name: str,
+    qualname: str,
+) -> None:
+    """Validate that ``args``/``kwargs`` are safe to write as the JSON
+    payload :meth:`SeatbeltSandboxExecutor.run_callable` hands to its
+    sandboxed child process.
+
+    Two checks, both required (Finding 3 fix):
+
+    1. :func:`_validate_json_safe_value`, recursively, over every element
+       of ``args`` and every value in ``kwargs`` -- rejects ``tuple``
+       values and non-``str`` dict keys that plain ``json.dumps()`` would
+       otherwise silently coerce (see that function's docstring).
+    2. ``json.dumps(..., allow_nan=False)`` over the whole structure --
+       rejects ``float("nan")``/``float("inf")``/``float("-inf")``, which
+       standard ``json.dumps()`` accepts by default as a non-standard
+       extension that many strict JSON parsers would reject. Raising here,
+       at serialization time, keeps the "this payload is boring, portable,
+       standard-compliant JSON" guarantee this whole design leans on.
+
+    Raises:
+        ValueError: If any argument fails either check.
+    """
+    for index, value in enumerate(args):
+        _validate_json_safe_value(value, path=f"args[{index}]")
+    for key, value in kwargs.items():
+        if type(key) is not str:
+            raise ValueError(
+                f"kwargs key {key!r} (type {type(key).__name__!r}) is not "
+                "a string. run_callable() keyword arguments must have "
+                "string keys."
+            )
+        _validate_json_safe_value(value, path=f"kwargs[{key!r}]")
+
+    try:
+        json.dumps(list(args), allow_nan=False)
+        json.dumps(kwargs, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "run_callable() only supports module-level functions or "
+            "functools.partial wrapping one, with JSON-serializable "
+            f"arguments -- the bound arguments for {module_name}."
+            f"{qualname} are not JSON-serializable ({exc!r}). Pickle is "
+            "not used for arguments (or the callable itself) because it "
+            "is unsafe to deserialize untrusted data; pass only "
+            "JSON-safe types (str, int, float, bool, None, list, dict "
+            "with string keys), and avoid NaN/Infinity/-Infinity floats."
+        ) from exc
+
+
 def build_sbpl_profile(policy: SandboxPolicy) -> str:
     """Generate an SBPL (Sandbox Profile Language) profile string for ``policy``.
 
@@ -728,12 +873,38 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
         the already-sandboxed child process (see the runner script built by
         :meth:`run_callable`) -- never here in the host.
 
+        **Plain-``str`` type check happens before anything else.**
+        ``__module__`` and ``__qualname__`` are ordinary, freely-writable
+        attributes on a function object -- nothing stops
+        ``func.__module__ = some_object`` where ``some_object`` is not even
+        a string. If that were allowed through, the very next line of
+        defense (``"<lambda>" in qualname``, or
+        ``globals_dict.get("__name__") != module_name``) would perform a
+        containment check or rich comparison *against attacker-supplied
+        input*, which for a custom object means invoking that object's
+        ``__contains__``/``__eq__``/``__ne__`` dunder methods -- in this
+        trusted host process, before the sandbox exists. That is the exact
+        same class of vulnerability as the already-fixed
+        ``importlib.import_module(func.__module__)`` bug this method's
+        docstring describes above: it doesn't matter whether the untrusted
+        value is *imported* or merely *compared*, either way attacker code
+        runs unsandboxed. So every value later used in a comparison,
+        containment check, or f-string built from untrusted metadata --
+        ``qualname``, ``module_name``, and ``globals_dict.get("__name__")``
+        -- is required to be an exact ``str`` (``type(x) is str``, not
+        ``isinstance(x, str)``, since a ``str`` subclass could itself
+        override ``__eq__``/``__contains__``) *before* any such operation is
+        attempted on it, and this check is the very first thing done after
+        confirming ``func`` is a plain function.
+
         Raises:
             TypeError: If ``func`` is not a plain function object.
-            ValueError: If ``func``'s ``qualname`` is not a flat module-level
-                name, or its ``__module__``/``__globals__`` do not agree on
-                where it lives, or it cannot be resolved back to the exact
-                same function object from within its own ``__globals__``.
+            ValueError: If ``func``'s ``__qualname__``/``__module__`` (or its
+                own ``__globals__["__name__"]``) is not a plain ``str``; if
+                ``qualname`` is not a flat module-level name; if
+                ``__module__``/``__globals__`` do not agree on where it
+                lives; or if it cannot be resolved back to the exact same
+                function object from within its own ``__globals__``.
         """
         if not isinstance(func, types.FunctionType):
             raise TypeError(
@@ -744,6 +915,23 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
 
         qualname = getattr(func, "__qualname__", "")
         module_name = getattr(func, "__module__", None)
+
+        # Type check FIRST, before any comparison/containment check touches
+        # these values -- see the docstring section above. `type(x) is str`
+        # (not `isinstance`) deliberately rejects `str` subclasses too, since
+        # a subclass could itself override __eq__/__contains__/__hash__.
+        if type(qualname) is not str or type(module_name) is not str:
+            raise ValueError(
+                "run_callable() requires plain string module metadata -- "
+                f"got __qualname__ of type {type(qualname).__name__!r} and "
+                f"__module__ of type {type(module_name).__name__!r} for "
+                f"{func!r}. Both must be exactly `str` (not a subclass): "
+                "comparing or containment-testing a non-str value here "
+                "would invoke attacker-controlled __eq__/__ne__/__contains__ "
+                "methods in this trusted host process, before the sandbox "
+                "even exists -- refusing before any such operation is "
+                "attempted."
+            )
 
         if "<lambda>" in qualname or "<locals>" in qualname or not module_name:
             raise ValueError(
@@ -764,13 +952,27 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
             )
 
         globals_dict = func.__globals__
-        if globals_dict.get("__name__") != module_name:
+        actual_module_name = globals_dict.get("__name__")
+
+        # Same type check applied to the (normally trustworthy) __globals__
+        # namespace's own "__name__" entry -- defense in depth in case
+        # something upstream ever manages to influence it.
+        if type(actual_module_name) is not str:
+            raise ValueError(
+                "run_callable() requires plain string module metadata -- "
+                f"{func!r}'s own __globals__['__name__'] is of type "
+                f"{type(actual_module_name).__name__!r}, not `str`. "
+                "Refusing to compare it against __module__ before any such "
+                "comparison is attempted."
+            )
+
+        if actual_module_name != module_name:
             raise ValueError(
                 "run_callable() only supports module-level functions or "
                 "functools.partial wrapping one, with JSON-serializable "
                 f"arguments -- {func!r}'s __module__ ({module_name!r}) does "
                 "not match the __name__ of its own __globals__ "
-                f"({globals_dict.get('__name__')!r}). This function refuses "
+                f"({actual_module_name!r}). This function refuses "
                 "to import module_name to check this (that would execute "
                 "attacker-influenced module code in the trusted host "
                 "process before validation completes) -- __globals__ is "
@@ -836,19 +1038,7 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
             args = ()
             kwargs = {}
 
-        try:
-            json.dumps(list(args))
-            json.dumps(kwargs)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "run_callable() only supports module-level functions or "
-                "functools.partial wrapping one, with JSON-serializable "
-                f"arguments -- the bound arguments for {module_name}."
-                f"{qualname} are not JSON-serializable ({exc!r}). Pickle is "
-                "not used for arguments (or the callable itself) because it "
-                "is unsafe to deserialize untrusted data; pass only "
-                "JSON-safe types (str, int, float, bool, None, list, dict)."
-            ) from exc
+        _validate_run_callable_arguments(args, kwargs, module_name, qualname)
         # The actual values (not the JSON strings validated above) are
         # written to the payload file by run_callable() so the child
         # process can json.load() them directly.
@@ -882,9 +1072,20 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
            would import and execute attacker-influenced module code here,
            before the sandbox even exists.
         2. Any bound arguments (from the ``functools.partial``, if used)
-           must be JSON-serializable -- validated via :func:`json.dumps`,
-           never :mod:`pickle`, since pickle is unsafe for untrusted data on
-           the way out of the sandbox too.
+           must be genuinely JSON-*native* -- validated via
+           :func:`_validate_run_callable_arguments` (Finding 3 fix), never
+           :mod:`pickle`, since pickle is unsafe for untrusted data on the
+           way out of the sandbox too. This is stricter than "passes
+           ``json.dumps()`` without raising": a bare ``json.dumps()`` call
+           would silently *coerce* a ``tuple`` argument into a
+           JSON-array-that-looks-like-a-list (so the child would
+           reconstruct a ``list`` where a ``tuple`` was actually bound) and
+           silently stringify non-``str`` dict keys, either of which means
+           the sandboxed child could end up executing a subtly different
+           call than the one requested. ``allow_nan=False`` is also passed
+           at every actual serialization call site so
+           NaN/Infinity/-Infinity floats raise ``ValueError`` instead of
+           being written as non-standard, potentially-ambiguous JSON.
         3. ``(module_name, qualname, args, kwargs)`` is written as plain
            JSON to a small file in a temporary directory alongside a
            runner script, and :meth:`run_command` executes
@@ -924,7 +1125,8 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
                         "qualname": qualname,
                         "args": list(args),
                         "kwargs": kwargs,
-                    }
+                    },
+                    allow_nan=False,
                 )
             )
 
@@ -968,8 +1170,30 @@ class SeatbeltSandboxExecutor(BaseSandboxExecutor):
             # new default-deny-reads profile means this must always be
             # added explicitly -- it is not implied by an empty
             # allowed_read_paths anymore.
+            #
+            # Similarly, if the caller's policy sets a non-empty
+            # `allowed_executables` (meaning "process-exec is restricted to
+            # only these literal paths" -- see build_sbpl_profile), this
+            # method's own internal `sys.executable <runner> <payload>`
+            # invocation below must itself be added to that allowlist, or
+            # this method would unconditionally fail under any caller policy
+            # that restricts allowed_executables at all, regardless of what
+            # the caller actually intended to allow: `run_command` re-derives
+            # the SBPL profile from `effective_policy` and would deny
+            # `sys.executable` itself before the runner script ever gets a
+            # chance to import and call the target function. An *empty*
+            # `allowed_executables` (the default, meaning "unrestricted")
+            # must stay empty here -- appending `sys.executable` to an empty
+            # tuple would flip "unrestricted" into "restricted to only this
+            # one executable", which is not this fix's job to do.
             effective_policy = active_policy.with_overrides(
-                allowed_read_paths=(*active_policy.allowed_read_paths, tmp_dir)
+                allowed_read_paths=(*active_policy.allowed_read_paths, tmp_dir),
+                allowed_executables=(
+                    (*active_policy.allowed_executables, sys.executable)
+                    if active_policy.allowed_executables
+                    and sys.executable not in active_policy.allowed_executables
+                    else active_policy.allowed_executables
+                ),
             )
 
             return self.run_command(

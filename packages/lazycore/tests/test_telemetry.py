@@ -12,8 +12,6 @@ from __future__ import annotations
 import pytest
 from opentelemetry.trace import Span
 
-import hashlib
-
 from lazycore.telemetry import (
     ATTR_GENAI_EVENT_CONTENT,
     ATTR_GENAI_EVENT_CONTENT_LENGTH,
@@ -140,7 +138,7 @@ class _RecordingSpan:
 
 
 def test_add_transcript_event_default_does_not_attach_raw_content():
-    """By default (no include_raw_content, no sanitizer), add_transcript_event() does NOT attach the raw content string to the span -- only role, a length, and a SHA-256 hash -- per the safe-by-default security contract."""
+    """By default (no include_raw_content, no sanitizer), add_transcript_event() does NOT attach the raw content string to the span -- only role and a length -- per the safe-by-default security contract."""
     span = _RecordingSpan()
     secret_content = "here is my API key: sk-super-secret-12345"
 
@@ -152,9 +150,23 @@ def test_add_transcript_event_default_does_not_attach_raw_content():
     assert secret_content not in str(attributes)
     assert attributes[ATTR_GENAI_EVENT_ROLE] == "tool"
     assert attributes[ATTR_GENAI_EVENT_CONTENT_LENGTH] == len(secret_content)
-    assert attributes[ATTR_GENAI_EVENT_CONTENT_SHA256] == hashlib.sha256(
-        secret_content.encode("utf-8")
-    ).hexdigest()
+
+
+def test_add_transcript_event_default_does_not_attach_any_content_hash():
+    """No content hash of any kind (e.g. ATTR_GENAI_EVENT_CONTENT_SHA256) is attached by default.
+
+    An unsalted/un-keyed hash of guessable content (common prompts, known
+    secret formats, short strings) is not actually safe: it still lets an
+    observer correlate two spans as carrying identical content, and it is
+    vulnerable to dictionary/brute-force recovery of the original text.
+    This regression test guards against that hash ever creeping back into
+    the default (metadata-only) path.
+    """
+    span = _RecordingSpan()
+    add_transcript_event(span, role="tool", content="password=hunter2")
+
+    _, attributes = span.events[0]
+    assert ATTR_GENAI_EVENT_CONTENT_SHA256 not in attributes
 
 
 def test_add_transcript_event_include_raw_content_opt_in_attaches_verbatim_content():
@@ -193,3 +205,40 @@ def test_add_transcript_event_extra_attributes_still_pass_through_in_all_modes()
     add_transcript_event(span, role="user", content="hi", turn_index=3)
     _, attributes = span.events[0]
     assert attributes["turn_index"] == 3
+
+
+def test_add_transcript_event_rejects_extra_attributes_colliding_with_reserved_keys():
+    """A caller-supplied extra attribute that collides with a reserved key (e.g. ATTR_GENAI_EVENT_CONTENT) must raise ValueError instead of silently overwriting the safe-by-default redaction contract, and no event may be emitted with the malicious override in place."""
+    span = _RecordingSpan()
+    malicious_extra_attributes = {ATTR_GENAI_EVENT_CONTENT: "actually leak this"}
+
+    with pytest.raises(ValueError, match="reserved"):
+        add_transcript_event(
+            span, role="user", content="safe", **malicious_extra_attributes
+        )
+
+    # No event should have been emitted at all -- the collision must be
+    # rejected before add_event() is ever called.
+    assert span.events == []
+
+
+def test_add_transcript_event_rejects_extra_attributes_colliding_with_role_or_hash_keys():
+    """Collisions against the other reserved keys (role, length, sha256) are also rejected, not just content."""
+    span = _RecordingSpan()
+
+    with pytest.raises(ValueError, match="reserved"):
+        add_transcript_event(
+            span, role="user", content="hi", **{ATTR_GENAI_EVENT_ROLE: "assistant"}
+        )
+
+    with pytest.raises(ValueError, match="reserved"):
+        add_transcript_event(
+            span, role="user", content="hi", **{ATTR_GENAI_EVENT_CONTENT_LENGTH: 0}
+        )
+
+    with pytest.raises(ValueError, match="reserved"):
+        add_transcript_event(
+            span, role="user", content="hi", **{ATTR_GENAI_EVENT_CONTENT_SHA256: "x"}
+        )
+
+    assert span.events == []

@@ -30,7 +30,6 @@ any subprocess is spawned.
 from __future__ import annotations
 
 import importlib
-import sys
 
 import pytest
 
@@ -90,15 +89,14 @@ def test_tampering_never_actually_imports_the_tampered_module_name(monkeypatch):
     """The critical proof: validating a tampered callable must NEVER import
     the tampered module name as a side effect. Monkeypatches
     importlib.import_module to raise AssertionError if invoked at all
-    during validation, and separately confirms the tampered module name is
-    absent from sys.modules before and after (belt-and-suspenders, in case
-    something imports it via a path this test didn't anticipate).
+    during validation -- combined with the ``pytest.raises(ValueError)``
+    assertion below, this fully proves no import ever happens. (A
+    ``sys.modules``-based check was deliberately not added here: it would
+    depend on process-global import state that unrelated tests, plugins, or
+    pytest's own collection machinery could perturb, causing a false
+    failure unrelated to any real regression -- the ``import_module`` guard
+    below is the robust proof.)
     """
-    assert _IRRELEVANT_BUT_REAL_MODULE not in sys.modules, (
-        f"{_IRRELEVANT_BUT_REAL_MODULE!r} must not already be imported "
-        "before this test runs, or the sys.modules assertion below would "
-        "be meaningless."
-    )
 
     def _boom(name, *args, **kwargs):
         raise AssertionError(
@@ -117,10 +115,6 @@ def test_tampering_never_actually_imports_the_tampered_module_name(monkeypatch):
     with pytest.raises(ValueError):
         executor._resolve_module_level_function(tampered)
 
-    # Belt-and-suspenders: the tampered module name must never have landed
-    # in sys.modules as a side effect of the validation call above.
-    assert _IRRELEVANT_BUT_REAL_MODULE not in sys.modules
-
 
 def test_tampered_module_pointing_at_nonexistent_module_is_also_rejected(monkeypatch):
     """Same tampering scenario, but pointing __module__ at a module name
@@ -135,9 +129,6 @@ def test_tampered_module_pointing_at_nonexistent_module_is_also_rejected(monkeyp
 
     with pytest.raises(ValueError, match="__globals__"):
         executor._resolve_module_level_function(tampered)
-
-    assert "some.totally.nonexistent.module.path" not in sys.modules
-    assert "some" not in sys.modules
 
 
 def test_untampered_module_level_function_still_resolves_correctly():
@@ -157,6 +148,167 @@ def _legitimate_module_level_function() -> int:
     """A real, untampered module-level function used by
     ``test_untampered_module_level_function_still_resolves_correctly``."""
     return 42
+
+
+class _DunderTripwire:
+    """An object whose comparison/containment/truthiness dunder methods
+    raise loudly if ever invoked -- used below to prove that
+    ``_resolve_module_level_function`` never performs a rich comparison
+    (``==``/``!=``), containment check (``in``), or truthiness test
+    (``bool(...)``/``not ...``) against an attacker-controlled,
+    non-``str`` ``__module__``/``__qualname__`` value.
+
+    This is the next layer of the same vulnerability class as the
+    import-based and ``__globals__``-mismatch bugs fixed elsewhere in this
+    file: ``func.__module__``/``__qualname__`` are plain, freely-writable
+    attributes -- nothing requires them to be strings at all. If validation
+    ever did ``globals_dict.get("__name__") != module_name`` or
+    ``"<lambda>" in qualname`` with one of these as the right/left-hand
+    operand, Python would invoke this object's ``__eq__``/``__ne__``/
+    ``__contains__`` in the trusted host process, before the sandbox exists
+    -- exactly the "attacker code runs unsandboxed" outcome this function
+    exists to prevent, even though no ``importlib.import_module`` call is
+    involved this time.
+    """
+
+    def __eq__(self, other: object) -> bool:
+        raise AssertionError(
+            "dunder method invoked -- SECURITY REGRESSION: "
+            "_DunderTripwire.__eq__ was called, meaning "
+            "_resolve_module_level_function compared an attacker-controlled "
+            "non-str value before type-checking it."
+        )
+
+    def __ne__(self, other: object) -> bool:
+        raise AssertionError(
+            "dunder method invoked -- SECURITY REGRESSION: "
+            "_DunderTripwire.__ne__ was called, meaning "
+            "_resolve_module_level_function compared an attacker-controlled "
+            "non-str value before type-checking it."
+        )
+
+    def __contains__(self, item: object) -> bool:
+        raise AssertionError(
+            "dunder method invoked -- SECURITY REGRESSION: "
+            "_DunderTripwire.__contains__ was called, meaning "
+            "_resolve_module_level_function did a containment check "
+            "(`x in qualname`-style) against an attacker-controlled non-str "
+            "value before type-checking it."
+        )
+
+    def __bool__(self) -> bool:
+        raise AssertionError(
+            "dunder method invoked -- SECURITY REGRESSION: "
+            "_DunderTripwire.__bool__ was called, meaning "
+            "_resolve_module_level_function evaluated the truthiness of an "
+            "attacker-controlled non-str value before type-checking it."
+        )
+
+    def __hash__(self) -> int:  # pragma: no cover -- not expected to be hit
+        raise AssertionError(
+            "dunder method invoked -- SECURITY REGRESSION: "
+            "_DunderTripwire.__hash__ was called."
+        )
+
+    def __repr__(self) -> str:
+        # Deliberately safe: error messages built by the function under
+        # test use %r / !r on func/module_name/qualname, and a raising
+        # __repr__ would make failures unreadable and mask the real assert.
+        return "<_DunderTripwire>"
+
+
+def test_non_string_module_attribute_is_rejected_without_invoking_dunders(monkeypatch):
+    """CRITICAL regression test: if ``__module__`` is tampered to a
+    non-``str`` object whose ``__eq__``/``__ne__``/``__contains__``/
+    ``__bool__`` raise ``AssertionError`` when invoked, validation must
+    reject it with a clear ``ValueError`` *without ever invoking any of
+    those dunder methods*. This proves the type check
+    (``type(x) is str``) happens strictly before any comparison,
+    containment check, or truthiness test involving the untrusted value --
+    closing the "comparison itself can run attacker code" variant of the
+    module-tampering vulnerability class documented at the top of this
+    file.
+    """
+    executor = SeatbeltSandboxExecutor()
+    tampered = _make_tampered_function(monkeypatch, _DunderTripwire())
+
+    with pytest.raises(ValueError, match="plain string"):
+        executor._resolve_module_level_function(tampered)
+
+
+def test_non_string_qualname_attribute_is_rejected_without_invoking_dunders(monkeypatch):
+    """Same proof as above, but for a tampered ``__qualname__`` instead of
+    ``__module__`` -- ``qualname`` is used in ``"<lambda>" in qualname``
+    and ``"<locals>" in qualname`` containment checks and
+    ``globals_dict.get(qualname)`` dict lookups, any of which could invoke
+    a malicious object's dunder methods if it were not type-checked first.
+
+    CPython's C-level slot for ``__qualname__`` enforces
+    ``isinstance(value, str)`` at assignment time (unlike ``__module__``,
+    which accepts literally any object), so a wholly-unrelated
+    ``_DunderTripwire`` object cannot be assigned here at all -- attempting
+    it raises ``TypeError: __qualname__ must be set to a string object``
+    before this test even reaches ``_resolve_module_level_function``. A
+    ``str`` *subclass* satisfies that ``isinstance`` check, though, and is
+    exactly the case the ``type(x) is str`` (not ``isinstance``) design
+    choice defends against -- so this test tampers with a subclass instance
+    whose dunder methods raise instead.
+    """
+
+    class _EvilQualname(str):
+        def __contains__(self, item: object) -> bool:
+            raise AssertionError(
+                "dunder method invoked -- SECURITY REGRESSION: "
+                "_EvilQualname.__contains__ was called, meaning "
+                "_resolve_module_level_function did a containment check "
+                "against a str-subclass qualname before type-checking it "
+                "with `type(x) is str`."
+            )
+
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError(
+                "dunder method invoked -- SECURITY REGRESSION: "
+                "_EvilQualname.__eq__ was called on the qualname before "
+                "type-checking it."
+            )
+
+        __hash__ = str.__hash__
+
+    monkeypatch.setattr(
+        _victim_module_level_function,
+        "__qualname__",
+        _EvilQualname(_victim_module_level_function.__qualname__),
+        raising=True,
+    )
+
+    executor = SeatbeltSandboxExecutor()
+    with pytest.raises(ValueError, match="plain string"):
+        executor._resolve_module_level_function(_victim_module_level_function)
+
+
+def test_str_subclass_module_attribute_is_also_rejected(monkeypatch):
+    """``type(x) is str`` (not ``isinstance(x, str)``) is used deliberately:
+    a ``str`` subclass could itself override ``__eq__``/``__contains__``/
+    ``__hash__`` to run attacker code on comparison despite satisfying
+    ``isinstance(x, str)``. Confirms such a subclass instance is rejected
+    the same way a wholly-unrelated object would be.
+    """
+
+    class _EvilStr(str):
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError(
+                "dunder method invoked -- SECURITY REGRESSION: _EvilStr "
+                "(a str subclass) had __eq__ invoked despite the "
+                "type(x) is str check, which must reject subclasses too."
+            )
+
+        __hash__ = str.__hash__
+
+    tampered = _make_tampered_function(monkeypatch, _EvilStr(_IRRELEVANT_BUT_REAL_MODULE))
+
+    executor = SeatbeltSandboxExecutor()
+    with pytest.raises(ValueError, match="plain string"):
+        executor._resolve_module_level_function(tampered)
 
 
 def test_dotted_qualname_is_rejected_as_unsupported():

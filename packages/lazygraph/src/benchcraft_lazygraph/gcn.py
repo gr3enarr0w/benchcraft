@@ -17,12 +17,16 @@ monitoring are explicitly out of scope for this pass.
 
 from __future__ import annotations
 
+import logging
+
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch_geometric.nn import GCNConv
 
 from benchcraft_lazygraph.sparse import PyGSparseAdapter
+
+_logger = logging.getLogger(__name__)
 
 __all__ = ["GCN", "resolve_device"]
 
@@ -41,8 +45,21 @@ def resolve_device(preferred: str | None = None) -> torch.device:
             # Smoke-test the device is actually usable.
             torch.zeros(1, device=device)
             return device
-        except Exception:
-            pass  # fall through to auto-detection
+        except (RuntimeError, AssertionError) as exc:
+            # RuntimeError: malformed device string (e.g. torch.device("not-a-device"))
+            # or an unavailable backend at allocation time. AssertionError: PyTorch's
+            # own "not compiled with <backend> enabled" check (e.g. CUDA on a
+            # CPU/MPS-only build). Both are the expected "this device string is not
+            # usable on this machine" case, so fall through to auto-detection. Any
+            # other exception type is unexpected and should propagate rather than be
+            # silently swallowed.
+            _logger.warning(
+                "Preferred device %r is not usable (%s: %s); falling back to "
+                "auto-detected device.",
+                preferred,
+                type(exc).__name__,
+                exc,
+            )
 
     if torch.backends.mps.is_available():
         return torch.device("mps")
