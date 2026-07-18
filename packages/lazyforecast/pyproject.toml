@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "benchcraft-forecast"
 version = "0.1.0"
-description = "Benchcraft LazyForecast: classical statistical forecasting (AutoARIMA/AutoETS via Nixtla statsforecast) over a Tier-1 Arrow-backed input pipeline, with a basic backtest/evaluation report."
+description = "Benchcraft Forecast: classical statistical forecasting (AutoARIMA/AutoETS via Nixtla statsforecast) over a Tier-1 Arrow-backed input pipeline, with a basic backtest/evaluation report."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -33,7 +33,7 @@ classifiers = [
 # PyPI. hatchling/pip do not have a portable, idiomatic way to express a
 # relative-path dependency in pyproject.toml metadata (unlike e.g. Poetry's
 # `path = "../lazycore"` extra), so it is declared here by its PyPI
-# distribution name, benchcraft-lazycore, as a bare, unpinned requirement --
+# distribution name, benchcraft-core, as a bare, unpinned requirement --
 # pinning a version would be misleading since it doesn't resolve from PyPI
 # at all. This is a real runtime dependency (forecast.py imports
 # lazycore.data at module level); declaring it means an isolated

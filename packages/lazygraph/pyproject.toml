@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "benchcraft-graph"
 version = "0.1.0"
-description = "Benchcraft LazyGraph: a concrete Tier-2 sparse graph tensor adapter (PyG COO <-> SciPy CSR/CSC bridge) plus a minimal GCN forward pass built on it."
+description = "Benchcraft Graph: a concrete Tier-2 sparse graph tensor adapter (PyG COO <-> SciPy CSR/CSC bridge) plus a minimal GCN forward pass built on it."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

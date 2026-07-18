@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "benchcraft-agent"
 version = "0.1.0"
-description = "Benchcraft LazyAgent: a bring-your-own-agent AgentAdapter pattern -- a rule-based reference agent executes file-manipulation tool-use tasks through the shared lazycore sandbox executor, scored for success/latency and reported via OTel GenAI telemetry."
+description = "Benchcraft Agent: a bring-your-own-agent AgentAdapter pattern -- a rule-based reference agent executes file-manipulation tool-use tasks through the shared lazycore sandbox executor, scored for success/latency and reported via OTel GenAI telemetry."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

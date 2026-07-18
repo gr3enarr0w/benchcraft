@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "benchcraft-tune"
 version = "0.1.0"
-description = "Benchcraft LazyTune: Adapter-Factory pattern for local LLM fine-tuning -- BaseTrainingAdapter + a ProgrammaticAdapter doing real (tiny) LoRA fine-tuning via peft/transformers."
+description = "Benchcraft Tune: Adapter-Factory pattern for local LLM fine-tuning -- BaseTrainingAdapter + a ProgrammaticAdapter doing real (tiny) LoRA fine-tuning via peft/transformers."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
