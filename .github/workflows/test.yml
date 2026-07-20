@@ -53,7 +53,7 @@ jobs:
             runs-on: ubuntu-latest
           # Heavy: torch + onnx + onnxscript.
           - subpackage: vision
-            extras: "vision,dev"
+            extras: "vision,automl,dev"
             runs-on: ubuntu-latest
           # Heavy: torch + transformers + peft.
           - subpackage: tune
