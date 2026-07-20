@@ -20,6 +20,12 @@ trajectory/result data shapes, and the adapter that wires an arbitrary
 agent callable to the shared executor. Per §2.3, LazyAgent does not get its
 own executor class -- only its own mode-specific `SandboxPolicy` values
 (see `dscraft.agent.tasks`).
+
+:class:`AgentAdapter` itself subclasses the one shared
+`dscraft.core.adapter.BaseSandboxedAdapter` base (also per §2.3's "one ...
+adapter base class" requirement) rather than defining an independent `abc.ABC`
+hierarchy -- see that module's docstring for what is actually shared between
+this and `dscraft.security.adapter.BaseSecurityAdapter`.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+from dscraft.core.adapter import BaseSandboxedAdapter
 from dscraft.core.sandbox import BaseSandboxExecutor, SandboxPolicy, SandboxResult
 
 __all__ = [
@@ -148,7 +155,7 @@ class TaskResult:
     detail: str = ""
 
 
-class AgentAdapter(abc.ABC):
+class AgentAdapter(BaseSandboxedAdapter):
     """Minimal bring-your-own-agent interface.
 
     ``run_task`` is the one canonical entrypoint (per CLAUDE.md's "one
@@ -156,6 +163,11 @@ class AgentAdapter(abc.ABC):
     the agent's chosen action actually gets executed. This pass provides
     exactly one concrete implementation, :class:`SandboxedAgentAdapter`,
     which always executes through the shared `dscraft.core.sandbox` executor.
+
+    Subclasses `dscraft.core.adapter.BaseSandboxedAdapter`, the one shared
+    adapter base LazyAgent and LazyRed both build on (§2.3) -- only the
+    task/trajectory/result data shapes and the ``run_task`` abstract method
+    below are LazyAgent-specific.
     """
 
     @abc.abstractmethod
@@ -214,6 +226,8 @@ class SandboxedAgentAdapter(AgentAdapter):
                 command through, per :meth:`AgentAdapter.run_task`'s
                 contract.
         """
+        self._require_sandbox_executor(executor)
+
         steps: list[TrajectoryStep] = [
             TrajectoryStep(role="user", content=task.description)
         ]

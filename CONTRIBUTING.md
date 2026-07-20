@@ -51,6 +51,7 @@ and the module dependency graph.
   - `test (core)`
   - `test (automl)`
   - `test (clean)`
+  - `test (eda)`
   - `test (forecast)`
   - `test (graph)`
   - `test (vision)`
@@ -62,8 +63,8 @@ and the module dependency graph.
   **This list describes the intended/target state, not what's live on
   GitHub yet.** The check names above assume `.github/workflows/test.yml`'s
   matrix uses the new `dscraft` subpackage names (`core`, `automl`,
-  `clean`, `forecast`, `graph`, `vision`, `tune`, `security`, `agent`) as
-  its `subpackage` matrix value, which is what determines each job's
+  `clean`, `eda`, `forecast`, `graph`, `vision`, `tune`, `security`,
+  `agent`) as its `subpackage` matrix value, which is what determines each job's
   display name. The actual GitHub branch-protection required-status-checks
   configuration has **not** been updated to this list yet — that requires
   a `gh api` call with a valid token, which is a separate, later step
@@ -91,7 +92,7 @@ There are two jobs:
   "packages/dscraft[<extras>,dev]"` install step (no more two-step
   install-the-base-package-first-then-the-module dance — there's only one
   package now) followed by `pytest packages/dscraft/tests/<subpackage>`.
-  The matrix covers all nine subpackages: `core`, `automl`, `clean`,
+  The matrix covers all ten subpackages: `core`, `automl`, `clean`, `eda`,
   `forecast`, `graph`, `vision`, `tune`, `security`, `agent`.
   - `automl` installs the `automl,automl-onnx,dev` extras (its
     `.compile()`→ONNX export path is optional, not core).
@@ -105,8 +106,8 @@ There are two jobs:
     deterministically fail every time regardless of any real regression.
     `macos-14` gives them a real Apple Silicon runner with actual Seatbelt
     support, matching this repo's stated primary reference platform.
-  - The rest (`core`, `automl`, `clean`, `forecast`, `graph`, `vision`,
-    `tune`) run on `ubuntu-latest`.
+  - The rest (`core`, `automl`, `clean`, `eda`, `forecast`, `graph`,
+    `vision`, `tune`) run on `ubuntu-latest`.
 - **`examples syntax check`** — runs `python -m py_compile` over every
   `packages/dscraft/examples/**/*.py` file. This only catches syntax
   errors/typos; it does not import or execute the examples, so it needs

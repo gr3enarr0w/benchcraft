@@ -547,3 +547,41 @@ def test_purge_rejects_mismatched_label_error_mask_length():
     )
     with pytest.raises(ValueError, match="label_error_mask length"):
         report.purge()
+
+
+# ---------------------------------------------------------------------------
+# Sanitizer.audit -- mixed-type/unsortable labels (CodeRabbit regression)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_tolerates_mixed_type_unsortable_labels():
+    """`_own_label_confidence`'s categorical-label branch used to do a bare
+    ``sorted(set(labels))``, which raises ``TypeError`` for genuinely
+    mixed-type labels (e.g. a mix of strings and ints) -- even though the
+    sibling ``label_errors.detect_label_errors`` call already tolerates
+    exactly this via ``_sorted_unique``'s insertion-order fallback. This
+    proves ``Sanitizer.audit()`` no longer crashes on that same label data.
+    """
+    labels = ["a", 1, "a", 1]
+    texts = [f"training passage number {i} about widgets" for i in range(4)]
+    groups = ["A", "A", "B", "B"]
+    train_df = pd.DataFrame({"text": texts, "label": labels, "group": groups})
+    test_df = pd.DataFrame(
+        {"text": ["a totally unrelated sentence about sourdough bread"], "group": ["A"]}
+    )
+    # Two distinct label values ("a", 1) -> a 2-class probability matrix.
+    probs = np.array(
+        [
+            [0.9, 0.1],
+            [0.2, 0.8],
+            [0.85, 0.15],
+            [0.3, 0.7],
+        ]
+    )
+    sanitizer = Sanitizer(train_df, target_col="text", label_col="label", group_col="group")
+
+    report = sanitizer.audit(test_df, probs)
+
+    assert isinstance(report, SanitizerReport)
+    assert report.own_label_confidence.shape == (len(train_df),)
+    assert np.all(np.isfinite(report.own_label_confidence))

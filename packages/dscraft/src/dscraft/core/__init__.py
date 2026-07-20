@@ -1,11 +1,12 @@
 """dscraft.core: the thin, shared substrate underneath every dscraft subpackage.
 
 See the package README for scope and the "why thin" rationale. This module
-re-exports the small public surface of ``dscraft.core.data``,
-``dscraft.core.telemetry``, ``dscraft.core.licensing``, and ``dscraft.core.sandbox`` so
-most consumers only need ``import dscraft.core``.
+re-exports the small public surface of ``dscraft.core.adapter``,
+``dscraft.core.data``, ``dscraft.core.telemetry``, ``dscraft.core.licensing``,
+and ``dscraft.core.sandbox`` so most consumers only need ``import dscraft.core``.
 """
 
+from dscraft.core.adapter import BaseSandboxedAdapter
 from dscraft.core.data import (
     ArrowBackedFrame,
     DenseMediaPipeline,
@@ -56,6 +57,8 @@ __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
+    # adapter.py
+    "BaseSandboxedAdapter",
     # data.py
     "ArrowBackedFrame",
     "DenseMediaPipeline",

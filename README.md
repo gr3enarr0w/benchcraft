@@ -1,6 +1,6 @@
 # DSCraft
 
-A unified, MIT-licensed, local-first ML tooling platform spanning data curation, tabular AutoML, time-series forecasting, graph ML, computer vision, LLM fine-tuning, LLM/agent red-teaming, and agent/RAG benchmark evaluation.
+A unified, MIT-licensed, local-first ML tooling platform spanning data curation, tabular AutoML, exploratory data analysis, time-series forecasting, graph ML, computer vision, LLM fine-tuning, LLM/agent red-teaming, and agent/RAG benchmark evaluation.
 
 See [`DSCraft_Unified_Architecture.md`](./DSCraft_Unified_Architecture.md) for the full locked v1 architecture spec, and [`CLAUDE.md`](./CLAUDE.md) for repo conventions and the module dependency graph.
 
@@ -29,6 +29,7 @@ import dscraft.automl      # available once installed with the `automl` extra
 | `dscraft.core` | *(base install)* | Shared substrate: three-tier data conventions, OTel GenAI telemetry helpers, license-isolation policy, shared sandbox executor. |
 | `dscraft.automl` | `automl` (+ `automl-onnx`) | Tabular AutoML — `.compile()` fuses a fitted `sklearn` pipeline into one portable ONNX graph. |
 | `dscraft.clean` | `clean` | Data-quality firewall — ONNX Runtime (PyTorch-free) embeddings feeding near-duplicate/label-error detection. |
+| `dscraft.eda` | `eda` | Exploratory data analysis — a lazy Polars profiling engine, HLL/KLL sketches, a mixed-type association matrix, and a self-contained HTML/Canvas report. |
 | `dscraft.forecast` | `forecast` | Time-series forecasting — classical statistical models over an Arrow-backed pipeline. |
 | `dscraft.graph` | `graph` | Graph ML — a sparse COO/CSR-CSC tensor adapter plus MPNNs. |
 | `dscraft.vision` | `vision` | Computer vision — a dense image pipeline plus CNN/ViT export via `torch.export()`→ONNX. |

@@ -36,6 +36,17 @@ Per §2.3, LazyRed does **not** define its own sandbox executor class here
 :class:`~dscraft.core.sandbox.SandboxPolicy` on top of it. See
 ``probes.py``'s ``build_probe_sandbox_policy`` for LazyRed's mode-specific
 policy values.
+
+:class:`BaseSecurityAdapter` itself subclasses the one shared
+`dscraft.core.adapter.BaseSandboxedAdapter` base (also per §2.3's "one ...
+adapter base class" requirement) rather than defining an independent
+`abc.ABC` hierarchy -- see that module's docstring for what is actually
+shared between this and `dscraft.agent.adapter.AgentAdapter`. This does
+**not** weaken the separate-Guardrail/Firewall-layer boundary from §2.3's
+last sentence: LazyRed's semantic-level probe/detector logic (prompt
+injection triggers, secret-leak detection in ``probes.py``) stays entirely
+in `dscraft.security`; only the generic sandbox-wiring adapter substrate is
+shared.
 """
 
 from __future__ import annotations
@@ -44,6 +55,7 @@ import abc
 from dataclasses import dataclass, field
 from typing import Any
 
+from dscraft.core.adapter import BaseSandboxedAdapter
 from dscraft.core.sandbox import BaseSandboxExecutor, SandboxResult
 from dscraft.core.telemetry import SecuritySeverity
 
@@ -152,7 +164,7 @@ class Finding:
     inconclusive: bool = False
 
 
-class BaseSecurityAdapter(abc.ABC):
+class BaseSecurityAdapter(BaseSandboxedAdapter):
     """Minimal ``BaseSecurityAdapter`` interface (architecture doc Part 3).
 
     Three required steps, matching garak's Probe -> Generator -> Detector
@@ -169,6 +181,11 @@ class BaseSecurityAdapter(abc.ABC):
     There is deliberately only one concrete adapter built against this
     interface in this pass (per CLAUDE.md's "one canonical adapter
     interface" rule): :class:`dscraft.security.probes.PromptInjectionAdapter`.
+
+    Subclasses `dscraft.core.adapter.BaseSandboxedAdapter`, the one shared
+    adapter base LazyRed and LazyAgent both build on (§2.3) -- only the
+    attempt/finding data shapes and the three abstract methods plus ``run``
+    below are LazyRed-specific.
     """
 
     @abc.abstractmethod
@@ -197,6 +214,7 @@ class BaseSecurityAdapter(abc.ABC):
 
     def run(self, probe_input: str, executor: BaseSandboxExecutor) -> Finding:
         """Convenience: chain ``generate_attempt`` -> ``run_target`` -> ``detect``."""
+        self._require_sandbox_executor(executor)
         attempt = self.generate_attempt(probe_input)
         attempt = self.run_target(attempt, executor)
         return self.detect(attempt)

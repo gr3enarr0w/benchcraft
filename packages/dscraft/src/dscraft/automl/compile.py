@@ -181,11 +181,13 @@ def _require_onnx_stack() -> tuple[Any, Any]:
     except ImportError as exc:
         raise ONNXExtraNotInstalledError(
             "compile() requires the optional 'automl-onnx' extra (skl2onnx, "
-            "onnx, onnxruntime). Install it with:\n"
-            '    pip install "dscraft[automl-onnx]"\n'
-            "This keeps the base dscraft install minimal "
-            "(numpy/pandas/scikit-learn only), per the architecture doc's "
-            "AutoML dependency-surface constraint."
+            "onnx, onnxruntime) on top of the 'automl' extra (numpy, "
+            "pandas, scikit-learn) that compile() itself depends on. "
+            "Install both together with:\n"
+            '    pip install "dscraft[automl,automl-onnx]"\n'
+            "This keeps ONNX export opt-in and separate from AutoML's "
+            "core numpy/pandas/scikit-learn dependency surface, per the "
+            "architecture doc's AutoML dependency-surface constraint."
         ) from exc
     return onnx, skl2onnx
 
@@ -226,8 +228,9 @@ def compile(  # noqa: A001 -- intentional public API name, see architecture doc
             ``sample_input`` cannot be coerced to a 2-D numeric array.
         sklearn.exceptions.NotFittedError: ``pipeline`` has not been
             fitted yet.
-        ONNXExtraNotInstalledError: the optional `automl-onnx` extra is not
-            installed.
+        ONNXExtraNotInstalledError: the optional `automl-onnx` extra (on
+            top of the `automl` extra) is not installed. Install both with
+            `pip install "dscraft[automl,automl-onnx]"`.
     """
     if not isinstance(pipeline, Pipeline):
         raise TypeError(

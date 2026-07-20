@@ -1,7 +1,7 @@
 """``SimpleImagePipeline``: the first concrete Tier-3 ``DenseMediaPipeline``.
 
 Per the architecture doc §2.1 (Tier 3: dense image/audio) and
-`dscraft.core.data.DenseMediaPipeline`'s own docstring: LazyCore defines only
+`dscraft.core.data.DenseMediaPipeline`'s own docstring: dscraft.core defines only
 the *shape* of the decode -> augment -> to-dense-tensor pipeline and
 explicitly depends on nothing image/tensor-related; LazyVision is expected
 to provide the first concrete decode/augment implementation. This module is

@@ -60,8 +60,9 @@ def export_gguf_stub(adapter_path: str | Path, output_path: str | Path) -> None:
         "(architecture doc §2.5, export backend 2) but does not perform "
         "real conversion. GGUF export requires llama.cpp's external "
         "conversion tooling (convert_hf_to_gguf.py / llama-quantize), "
-        "which is out of scope for this scaffold-depth pass. See "
-        "packages/dscraft/TUNE_README_FRAGMENT.md 'What's deferred and why'. "
+        "which is out of scope for this scaffold-depth pass. See the "
+        "'dscraft.tune' section of packages/dscraft/README.md for what's "
+        "deferred and why. "
         f"(requested: {Path(adapter_path)} -> {Path(output_path)})"
     )
 
@@ -91,7 +92,7 @@ def export_mlx_stub(adapter_path: str | Path, output_path: str | Path) -> None:
         "(architecture doc §2.5, export backend 2) but does not perform "
         "real conversion. MLX export requires Apple's external mlx-lm "
         "conversion tooling (mlx_lm.convert), which is out of scope for "
-        "this scaffold-depth pass. See packages/dscraft/TUNE_README_FRAGMENT.md "
-        "'What's deferred and why'. "
+        "this scaffold-depth pass. See the 'dscraft.tune' section of "
+        "packages/dscraft/README.md for what's deferred and why. "
         f"(requested: {Path(adapter_path)} -> {Path(output_path)})"
     )

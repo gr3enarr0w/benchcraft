@@ -34,7 +34,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Sequence, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Sequence, Union
 
 import numpy as np
 
@@ -191,7 +191,19 @@ def _own_label_confidence(labels: object, probs: object) -> np.ndarray:
     if np.issubdtype(labels_arr.dtype, np.integer) or labels_arr.dtype == np.bool_:
         label_idx = labels_arr.astype(int)
     else:
-        unique_values = sorted(set(labels_arr.tolist()))
+        items = labels_arr.tolist()
+        try:
+            unique_values = sorted(set(items))
+        except TypeError:
+            # Genuinely mixed-type/unsortable labels (e.g. a mix of strings
+            # and numbers) -- fall back to first-seen (insertion) order,
+            # mirroring label_errors.py's `_sorted_unique` fallback so
+            # Sanitizer.audit() tolerates exactly the label data that
+            # detect_label_errors() alone would have tolerated.
+            seen: dict[Any, None] = {}
+            for item in items:
+                seen.setdefault(item, None)
+            unique_values = list(seen.keys())
         value_to_index = {value: idx for idx, value in enumerate(unique_values)}
         label_idx = np.array([value_to_index[value] for value in labels_arr.tolist()], dtype=int)
     return probs_arr[np.arange(label_idx.shape[0]), label_idx]

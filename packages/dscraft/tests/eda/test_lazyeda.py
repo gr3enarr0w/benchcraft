@@ -10,6 +10,8 @@ correctly and produces a coherent, exportable result.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import polars as pl
 import pytest
@@ -207,7 +209,7 @@ class TestEdgeCases:
         assert summary.quantiles is None
         assert summary.histogram is None
 
-    def test_zero_row_source_does_not_raise(self) -> None:
+    def test_zero_row_source_does_not_raise(self, tmp_path) -> None:
         df = pl.DataFrame({"a": pl.Series("a", [], dtype=pl.Int64), "b": pl.Series("b", [], dtype=pl.Utf8)})
         profile = LazyEDA().profile(df)
         assert profile.row_count == 0
@@ -216,8 +218,10 @@ class TestEdgeCases:
         assert profile.cardinality_results == {}
         # export must still succeed and produce valid HTML (report.py's
         # own empty/near-empty handling), not raise.
-        html_path = df  # placeholder to keep flake8 quiet about unused df above
-        del html_path
+        out_path = tmp_path / "empty.html"
+        profile.export(out_path)
+        assert out_path.exists()
+        assert "<!DOCTYPE html>" in out_path.read_text(encoding="utf-8")
 
     def test_custom_tuning_knobs_are_respected(self) -> None:
         df = _mixed_dataframe(n=300)
@@ -237,3 +241,33 @@ class TestEdgeCases:
             c for c in profile.report_data.column_summaries if c.name == "amount"
         )
         assert len(amount_summary.histogram) <= 4
+
+    def test_numeric_column_with_nan_and_inf_does_not_raise(self) -> None:
+        """Polars' `drop_nulls()` does NOT drop float NaN (null and NaN are
+        distinct concepts there), so a numeric column containing NaN/+-inf
+        used to reach quantile estimation / histogram construction
+        unfiltered and crash `profile()`. This proves such a column is now
+        handled gracefully: quantiles/the histogram are computed only over
+        the column's finite values.
+        """
+        df = pl.DataFrame(
+            {
+                "amount": pl.Series(
+                    "amount",
+                    [1.0, 2.0, float("nan"), 3.0, float("inf"), float("-inf"), 4.0, None],
+                    dtype=pl.Float64,
+                )
+            }
+        )
+        profile = LazyEDA().profile(df)
+
+        summary = profile.report_data.column_summaries[0]
+        # 1 explicit null -> reflected in null accounting independently of
+        # the finite-value filter applied for sketching.
+        assert summary.null_count == 1
+        # Quantiles/histogram must exist (finite values [1.0, 2.0, 3.0,
+        # 4.0] remain) and must not include NaN/inf as the min/max.
+        assert summary.quantiles is not None
+        assert math.isfinite(summary.quantiles["min"])
+        assert math.isfinite(summary.quantiles["max"])
+        assert summary.histogram is not None

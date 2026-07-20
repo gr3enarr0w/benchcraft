@@ -91,6 +91,7 @@ its stat table). See :func:`_numeric_histogram`/:func:`_categorical_histogram`.
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Optional, Sequence, Union
@@ -455,14 +456,28 @@ class LazyEDA:
         non_null_values = full_frame[name].drop_nulls().to_list()
 
         if column.category == _NUMERIC_CATEGORY and non_null_values:
-            kll_result = estimate_quantiles(
-                non_null_values, quantiles=self._quantiles, k=self._kll_k
-            )
-            quantile_results[name] = kll_result
-            quantiles = {
-                _quantile_label(q): value for q, value in kll_result.quantile_estimates.items()
-            }
-            histogram = _numeric_histogram(non_null_values, self._histogram_bins)
+            # Polars treats `NaN` as a valid float *value*, not as missing
+            # data -- null and NaN are distinct concepts there, so the
+            # `.drop_nulls()` call above does NOT drop NaN (nor +/-inf).
+            # Left unfiltered, a numeric column containing NaN/inf can
+            # still reach quantile estimation / histogram construction
+            # below and crash the whole `profile()` call. Filter to only
+            # finite values here: quantiles/the histogram are computed
+            # over the column's finite values only, with NaN/inf values
+            # excluded from sketching (though still reflected in
+            # null_count/null_percentage's row-level accounting above,
+            # since those are computed independently of this filter).
+            finite_values = [value for value in non_null_values if math.isfinite(value)]
+            if finite_values:
+                kll_result = estimate_quantiles(
+                    finite_values, quantiles=self._quantiles, k=self._kll_k
+                )
+                quantile_results[name] = kll_result
+                quantiles = {
+                    _quantile_label(q): value
+                    for q, value in kll_result.quantile_estimates.items()
+                }
+                histogram = _numeric_histogram(finite_values, self._histogram_bins)
         elif column.category == _STRING_CATEGORY and non_null_values:
             hll_result = estimate_cardinality(non_null_values, log2_k=self._hll_log2_k)
             cardinality_results[name] = hll_result

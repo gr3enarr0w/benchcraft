@@ -5,9 +5,16 @@ pass: fusing a fitted sklearn Pipeline into a single ONNX graph, and
 verifying that graph produces the same predictions as the original
 pipeline when run through onnxruntime.
 
-Requires the `onnx` extra (skl2onnx, onnx, onnxruntime) to be installed;
-tests are skipped (not failed) if it isn't, since that extra is optional
-by design.
+Most tests in this module exercise `compile()`'s actual ONNX conversion
+and therefore require the `automl-onnx` extra (skl2onnx, onnx,
+onnxruntime); those are skipped (not failed) via `_import_onnx_stack()`
+if it isn't installed, since that extra is optional by design. A handful
+of tests -- `test_public_api_surface` and the tests that assert `compile()`
+raises before ever reaching ONNX conversion (bad pipeline type, unfitted
+pipeline, non-numeric input, wrong feature count) -- need only the base
+`automl` extra and deliberately do NOT call `_import_onnx_stack()`, so
+they still run (and prove real coverage) in an `automl`-only environment
+that never installed `automl-onnx`.
 """
 
 from __future__ import annotations
@@ -24,10 +31,21 @@ from sklearn.preprocessing import StandardScaler
 import dscraft.automl
 from dscraft.automl import CompileOptions, compile
 
-onnxruntime = pytest.importorskip(
-    "onnxruntime", reason="onnxruntime not installed; skipping onnx-dependent tests"
-)
-onnx = pytest.importorskip("onnx")
+
+def _import_onnx_stack():
+    """Import `onnx`/`onnxruntime`, skipping the calling test if unavailable.
+
+    Kept as a per-test helper (rather than a module-level
+    `pytest.importorskip`) so tests that don't actually exercise ONNX
+    conversion -- e.g. `test_public_api_surface`, which only needs the
+    base `automl` extra -- are not silently skipped just because
+    `automl-onnx` isn't installed in the current environment.
+    """
+    onnxruntime = pytest.importorskip(
+        "onnxruntime", reason="onnxruntime not installed; skipping onnx-dependent tests"
+    )
+    onnx = pytest.importorskip("onnx")
+    return onnx, onnxruntime
 
 
 def _fit_scaler_logreg_pipeline(random_state: int = 0) -> tuple[Pipeline, np.ndarray, np.ndarray]:
@@ -66,6 +84,7 @@ def _run_onnx(onnx_model, X: np.ndarray) -> np.ndarray:
     `[labels, probabilities]` for a classifier), letting each test assert on
     whichever output index it cares about.
     """
+    _, onnxruntime = _import_onnx_stack()
     session = onnxruntime.InferenceSession(
         onnx_model.SerializeToString(), providers=["CPUExecutionProvider"]
     )
@@ -102,6 +121,7 @@ def test_compile_rejects_unfitted_pipeline():
 def test_compile_produces_valid_onnx_model():
     """`compile()` returns an `onnx.ModelProto` that passes
     `onnx.checker.check_model`, i.e. a structurally valid ONNX graph."""
+    onnx, _ = _import_onnx_stack()
     pipeline, _, X_test = _fit_scaler_logreg_pipeline()
     onnx_model = compile(pipeline, X_test)
     assert isinstance(onnx_model, onnx.ModelProto)
