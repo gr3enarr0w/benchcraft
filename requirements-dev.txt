@@ -1,7 +1,8 @@
 # Editable install of the single DSCraft package for local development.
-# There is one installable package now (packages/dscraft); all nine
+# There is one installable package now (packages/dscraft); all ten
 # subpackages (core, automl, clean, forecast, graph, vision, tune,
-# security, agent) live inside it and are pulled in via the `all` extra.
+# security, agent, eda) live inside it and are pulled in via the `all`
+# extra.
 #
 # Usage: pip install -r requirements-dev.txt
 #

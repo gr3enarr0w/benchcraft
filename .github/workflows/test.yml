@@ -79,6 +79,9 @@ jobs:
           - subpackage: agent
             extras: "agent,dev"
             runs-on: macos-14
+          - subpackage: eda
+            extras: "eda,dev"
+            runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4

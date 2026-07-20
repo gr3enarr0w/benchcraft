@@ -49,11 +49,15 @@ automl-onnx = [
     "onnxruntime>=1.17",
 ]
 # Module 2 (LazyClean): ONNX Runtime (PyTorch-free, by hard architectural
-# constraint -- never add torch/transformers here) text embeddings.
+# constraint -- never add torch/transformers here) text embeddings, plus
+# `datasketch` for contamination.py's MinHash signature generation (stage-1
+# LSHBloom candidate screening -- see that module's docstring for exactly
+# which datasketch.MinHash members are used).
 clean = [
     "onnxruntime>=1.17",
     "onnx>=1.15",
     "numpy>=1.24",
+    "datasketch>=1.6",
 ]
 # Module 3 (LazyForecast): classical statistical forecasting core.
 # statsmodels is test-only (see test_real_dataset_validation.py -- it
@@ -110,9 +114,43 @@ security = []
 # -- both rely on the shared `dscraft.core.sandbox` executor rather than any
 # subpackage-specific dependency.
 agent = []
+# Module 10 (LazyEDA, now `eda`): lazy Polars profiling (engine.py) +
+# Apache DataSketches HLL/KLL sketches (sketches.py) + a SciPy-based
+# association-matrix suite (associations.py) + a dependency-free HTML/
+# Canvas report renderer (report.py). `datasketches` is a hard runtime
+# dependency here (not a further-nested optional extra) -- see
+# sketches.py's module docstring for why HLL/KLL cardinality/quantile
+# estimation *is* this subpackage's signature scalable-profiling
+# capability, not an optional add-on bolted onto something with other
+# things to do without it. `polars` is pinned to the same floor as the
+# `dev` extra's own polars pin below (both need Polars' lazy-execution
+# API; keeping the two floors in sync avoids two different minimum
+# versions of the same library across extras of one package). `scipy` is
+# needed directly by associations.py's Cramer's V / correlation-ratio /
+# continuous-correlation implementations (`scipy.stats`,
+# `scipy.stats.contingency`) -- report.py and engine.py need neither
+# numpy nor scipy beyond what polars/datasketches already pull in.
+#
+# DuckDB was originally floated (per the architecture doc's EDA research)
+# as a second lazy-execution engine alongside Polars, but is deliberately
+# NOT added here: engine.py's actual implementation covers every lazy
+# execution need (schema resolution, null-counting, row-count) with
+# Polars' own lazy API alone (`pl.scan_parquet`/`pl.scan_csv` +
+# `.collect_schema()`/`.select(...).collect()`), and nothing built in
+# sketches.py/associations.py/report.py/this wiring module needs SQL
+# execution or a second query engine. Adding `duckdb` here now would be
+# an unused dependency with no code path exercising it -- if a genuine
+# DuckDB-specific need (e.g. SQL-expression-based profiling) emerges
+# later, add it as its own opt-in extra at that point rather than
+# reflexively now.
+eda = [
+    "polars>=0.20",
+    "datasketches>=5.0",
+    "scipy>=1.11",
+]
 
 # Union of every module extra above (excluding dev) -- installs everything
-# needed to run all nine subpackages' runtime code paths, including
+# needed to run all ten subpackages' runtime code paths, including
 # AutoML's optional ONNX export path.
 all = [
     "numpy>=1.24",
@@ -121,6 +159,7 @@ all = [
     "skl2onnx>=1.16",
     "onnx>=1.15",
     "onnxruntime>=1.17",
+    "datasketch>=1.6",
     "statsforecast>=1.7",
     "statsmodels>=0.14",
     "scipy>=1.11",
@@ -130,6 +169,8 @@ all = [
     "onnxscript>=0.1.0",
     "transformers>=4.40",
     "peft>=0.10",
+    "polars>=0.20",
+    "datasketches>=5.0",
 ]
 
 dev = [

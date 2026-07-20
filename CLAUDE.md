@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repository contains real source code under `packages/dscraft/` — one real, installable Python package, `dscraft`, with its own `pyproject.toml`, `src/`, `tests/`, and `examples/`, organized internally into nine purpose-based subpackages (`core` plus eight modules). Install it with `pip install -e "packages/dscraft[dev,all]"` and run its tests with `pytest packages/dscraft/tests`. See the module table and dependency graph below for what's built and how the subpackages relate.
+This repository contains real source code under `packages/dscraft/` — one real, installable Python package, `dscraft`, with its own `pyproject.toml`, `src/`, `tests/`, and `examples/`, organized internally into ten purpose-based subpackages (`core` plus nine modules — the ninth module, `eda`, was added after the original nine-module scope-lock as a genuinely new, tenth capability area). Install it with `pip install -e "packages/dscraft[dev,all]"` and run its tests with `pytest packages/dscraft/tests`. See the module table and dependency graph below for what's built and how the subpackages relate.
 
 ## What this document is
 
@@ -24,7 +24,7 @@ This repository contains real source code under `packages/dscraft/` — one real
 ## Shared architecture (LazyCore) — apply these conventions across modules
 
 - **Data/tensor foundation is tiered, not uniform.** Dense tabular/text/time-series → Apache Arrow (pandas 2.x `ArrowDtype`, Polars), zero-copy. Sparse graph tensors → dedicated COO/CSR-CSC adapter (DLPack cannot represent sparsity — real conversion required). Dense image/audio → native FFCV-style decode+augment pipeline with DLPack handoff only at the final dense-tensor stage (these workloads are compute-bound, not copy-bound).
-- **Packaging is one real package with per-subpackage extras, not per-module packages, not a monorepo.** *(Superseded history: the original decision was independently-versioned separate packages per module, Hugging Face-style, sharing one thin `lazycore` package; a later refinement approved a thin `benchcraft-ml` re-export umbrella on top of those nine packages. Both are now superseded — `benchcraft-ml` was never published or merged.)* The current, locked model: one real package, `dscraft`, with real code (not shims) in purpose-based subpackages (`dscraft.core`, `.automl`, `.clean`, `.forecast`, `.graph`, `.vision`, `.tune`, `.security`, `.agent`), each subpackage's heavy dependencies gated behind its own pip extra (`pip install dscraft[automl]`, `dscraft[all]`) so no environment is ever forced to install two conflicting dependency stacks (PyTorch-heavy, PyTorch-free, Node-adjacent) at once. See `DSCraft_Unified_Architecture.md` §2.7 for the full decision history and reversal text.
+- **Packaging is one real package with per-subpackage extras, not per-module packages, not a monorepo.** *(Superseded history: the original decision was independently-versioned separate packages per module, Hugging Face-style, sharing one thin `lazycore` package; a later refinement approved a thin `benchcraft-ml` re-export umbrella on top of those nine packages. Both are now superseded — `benchcraft-ml` was never published or merged.)* The current, locked model: one real package, `dscraft`, with real code (not shims) in purpose-based subpackages (`dscraft.core`, `.automl`, `.clean`, `.forecast`, `.graph`, `.vision`, `.tune`, `.security`, `.agent`, `.eda`), each subpackage's heavy dependencies gated behind its own pip extra (`pip install dscraft[automl]`, `dscraft[all]`) so no environment is ever forced to install two conflicting dependency stacks (PyTorch-heavy, PyTorch-free, Node-adjacent) at once. See `DSCraft_Unified_Architecture.md` §2.7 for the full decision history and reversal text.
 - **Telemetry uses OpenTelemetry GenAI semantic conventions** as the shared schema across security reports, agent trajectories, and ML leaderboards (spans + custom attributes like `security.severity`, `owasp.mapping`, `ml.metric.accuracy`).
 - **Export/compilation has three permanently separate backends** — don't unify under one IR: (1) ONNX/ONNX Runtime (AutoML via skl2onnx, LazyVision via `torch.export`→onnx-graphsurgeon), (2) local-only LLM serving formats GGUF/MLX for LazyTune (no vLLM/TensorRT-LLM/AutoAWQ-Marlin in v1), (3) edge compilation (deferred).
 - **Sandbox execution is shared between LazyRed and LazyAgent** (one executor + adapter base class, mode-specific policies on top) — both contain the same kernel-level threat class (arbitrary code execution). LazyRed's semantic-level threats (prompt injection, credential leakage) are handled by a *separate* Guardrail/Firewall layer, not the sandbox.
@@ -40,7 +40,7 @@ This repository contains real source code under `packages/dscraft/` — one real
 - Non-commercial-licensed weights/data (e.g., CC BY-NC) → isolate behind an explicit opt-in flag (`accept_restricted_licenses=True`), per the Tier 1/Tier 2 model allowlist below.
 - **Platform code target: 100% MIT.** External model checkpoints are classified per module as Tier 1 (permissive, e.g., Apache-2.0/MIT — auto-usable) or Tier 2 (restricted, e.g., CC BY-NC — opt-in-gated). Maintaining and re-verifying these allowlists is an ongoing task, not one-time.
 
-## The nine subpackages of the single `dscraft` package (all "Lazy*" names are internal codenames, not user-facing)
+## The ten subpackages of the single `dscraft` package (all "Lazy*" names are internal codenames, not user-facing)
 
 | Module | Status | One-line focus |
 |---|---|---|
@@ -53,6 +53,7 @@ This repository contains real source code under `packages/dscraft/` — one real
 | LazyRed | In v1, local targets only | Red-teaming adapter over garak/DeepTeam/PyRIT/Promptfoo; offline-first; findings mapped to OWASP LLM/Agentic Top 10 + MITRE ATLAS |
 | LazyAgent | In v1, local targets only | Agent/RAG benchmark eval; bring-your-own-agent adapter; Pareto RAG optimization (accuracy/latency/cost); shares sandbox executor with LazyRed |
 | LazyEdge | Deferred (roadmap only) | Edge/microcontroller compilation — not user-facing, do not implement |
+| LazyEDA | In v1 (added post-scope-lock, a tenth capability area) | Exploratory data analysis: lazy Polars profiling engine + Apache DataSketches HLL/KLL sketches + SciPy-based association matrix + dependency-free HTML/Canvas report, behind one `LazyEDA` entry point |
 
 For full per-module detail (algorithms, failure modes, licensing specifics) read Part 3 and Appendix A of `DSCraft_Unified_Architecture.md` directly rather than relying on the table above.
 
@@ -63,7 +64,7 @@ Per §2.9, formal inter-module contracts are explicitly deferred, so subpackages
 - **`packages/dscraft/src/dscraft/core/`** (three-tier data conventions §2.1, OTel schema helpers §2.6, license-isolation policy §2.2/§2.10) — must exist before any subpackage work starts, but is intentionally thin/small.
 - **Shared sandbox executor + adapter base class** (§2.3), living under `packages/dscraft/src/dscraft/core/sandbox/` — blocks only `security` and `agent`, nothing else.
 
-Once `dscraft.core` exists, these have **zero cross-subpackage dependency** and are logically independent of one another: AutoML, LazyClean, LazyForecast, LazyGraph, LazyVision, LazyTune. `security` (LazyRed) and `agent` (LazyAgent) additionally need the shared sandbox executor. LazyEdge is not built (deferred). Don't invent inter-subpackage imports or a shared runtime interface to "help" this along — the architecture doc treats that as premature until two real modules need it.
+Once `dscraft.core` exists, these have **zero cross-subpackage dependency** and are logically independent of one another: AutoML, LazyClean, LazyForecast, LazyGraph, LazyVision, LazyTune, `eda` (LazyEDA). `security` (LazyRed) and `agent` (LazyAgent) additionally need the shared sandbox executor. LazyEdge is not built (deferred). Don't invent inter-subpackage imports or a shared runtime interface to "help" this along — the architecture doc treats that as premature until two real modules need it. Note in particular that `eda` does **not** import from or export to `forecast`, even though time-series-aware EDA is an obvious future use case (see `DSCraft_Unified_Architecture.md`'s LazyEDA module entry) — per §2.9, that stays deferred until a concrete cross-module need is proven, not built preemptively.
 
 ## Working as a library, not a pile of scripts
 

@@ -37,6 +37,7 @@ what's here today and how to install/run it.
 | [`dscraft.tune`](#dscrafttune) | `tune` | Local LLM fine-tuning — an Adapter-Factory `BaseTrainingAdapter` interface with a `ProgrammaticAdapter` doing real (tiny) LoRA fine-tuning via `peft`/`transformers`. |
 | [`dscraft.security`](#dscraftsecurity) | `security` | LLM red-teaming — a `BaseSecurityAdapter` running a real prompt-injection probe/detector loop against a local target inside the shared sandbox, OWASP-mapped findings. |
 | [`dscraft.agent`](#dscraftagent) | `agent` | Agent/benchmark eval — a bring-your-own-agent `AgentAdapter` executing file-manipulation tool-use tasks inside the shared sandbox, scored for pass rate and latency. |
+| [`dscraft.eda`](#dscrafteda) | `eda` | Exploratory data analysis — a lazy Polars profiling engine, HLL/KLL sketches, a mixed-type association matrix, and a self-contained HTML/Canvas report, composed behind one `LazyEDA` entry point. |
 
 ## Installation
 
@@ -111,9 +112,45 @@ lazily imported) install via the separate `automl-onnx` extra.
 
 ## `dscraft.clean`
 
-ONNX Runtime (deliberately PyTorch-free, to stay lightweight) text
-embeddings feeding cosine-similarity near-duplicate detection — a
-scaffold of the LazyClean module's D4 semantic-dedup idea. Zero-vector
+A data-quality firewall for a training DataFrame. The primary entrypoint is
+`Sanitizer`, which composes three independently-implemented capabilities
+into one audit-then-clean workflow:
+
+- **DeCoLe** (`label_errors.py`) — group-conditioned Confident Learning:
+  per-(group, class) confidence thresholds instead of one global threshold,
+  avoiding the standard confident-learning failure mode of over-pruning a
+  lower-confidence-but-correctly-labeled group's examples.
+- **Train/test contamination auditing** (`contamination.py`) — a two-stage
+  pipeline: cheap LSHBloom MinHash/Bloom-filter candidate screening (via
+  `datasketch`) over every row, then optional Min-K%++ log-probability
+  validation for stage-1 candidates (only run when the caller supplies
+  precomputed per-token log-probabilities from a language model this
+  module never runs itself).
+- **Dataset Integrity Score** (`integrity.py`) — a single weighted scalar
+  combining the label-error rate, the contamination rate, and
+  train/test demographic-group drift (Jensen-Shannon divergence).
+
+```python
+from dscraft.clean import Sanitizer
+
+sanitizer = Sanitizer(train_df, target_col="text", label_col="label", group_col="group")
+report = sanitizer.audit(test_df, out_of_sample_probs)  # from your own k-fold CV
+print(report.integrity_report.score)  # 0.0 (worst) .. 1.0 (best)
+
+cleaned_df = report.purge(strategy="demographic-preserving", output_path="cleaned.parquet")
+```
+
+`report.purge()`'s `"demographic-preserving"` strategy removes flagged
+label-error rows and training rows matched to validated-contaminated test
+items, while capping how much any single demographic group can be pruned
+relative to the dataset-wide removal rate — see `SanitizerReport.purge`'s
+docstring for the exact, documented algorithm.
+
+`detect_near_duplicate_text` remains available as the lower-level building
+block it always was (ONNX Runtime, deliberately PyTorch-free, text
+embeddings feeding cosine-similarity near-duplicate detection — a scaffold
+of the LazyClean module's D4 semantic-dedup idea; the IVF-HNSW/spherical
+k-means scale-out path is still out of scope, see `dedup.py`). Zero-vector
 ("no extractable features") rows are honestly reported as "not
 comparable," distinct from both confirmed-duplicate and confirmed-distinct
 pairs. Install via the `clean` extra.
@@ -173,6 +210,46 @@ sandbox genuinely drives the scored outcome; a tiny benchmark runner
 reports aggregate pass rate and latency via `dscraft.core.telemetry`. No
 extra heavy runtime deps beyond `dscraft.core` itself — install via the
 `agent` extra.
+
+## `dscraft.eda`
+
+`LazyEDA` is the single entry point over four independently-built pieces:
+a lazy-Polars profiling `engine` (schema + per-column null counts + row
+count, computed without materializing a source's full data), `sketches`
+(HyperLogLog cardinality and KLL quantile estimation, via the Apache
+Software Foundation's `datasketches` library), `associations` (a mixed
+continuous/categorical/mixed-type pairwise correlation/association-matrix
+suite built on SciPy), and a `report` renderer that turns already-
+aggregated summaries into one self-contained, offline-friendly HTML/Canvas
+document — no external CDN references, no charting library, just inlined
+CSS/JS.
+
+```python
+from dscraft.eda import LazyEDA
+
+profile = LazyEDA().profile("orders.parquet")
+print(profile.null_report.columns_with_nulls())
+print(profile.association_matrix.columns)
+
+profile.export("orders_eda_report.html")
+```
+
+`LazyEDA.profile` routes each column by the coarse category
+`engine.profile_schema` already assigns it: `"numeric"` columns get a KLL
+quantile pass (min/p25/p50/p75/max by default) plus an equal-width
+histogram; `"string"` columns get an HLL cardinality estimate plus a
+top-K value-frequency histogram; `"boolean"`/`"temporal"`/`"other"`
+columns get neither sketch (see the module docstring in
+`dscraft/eda/__init__.py` for the full rationale). The returned
+`EDAProfile` exposes every intermediate result — the schema/null reports,
+the per-column `KLLResult`/`HLLResult` sketches, and the
+`AssociationMatrixResult` — as inspectable attributes, not just an
+`.export()` side effect, matching this platform's convention (see
+`dscraft.clean`'s `SanitizerReport`) of returning programmatically usable
+result objects. Outlier/anomaly detection and time-series-specific EDA
+(despite `dscraft.forecast` being an obvious future consumer) are out of
+scope for this pass — see `DSCraft_Unified_Architecture.md`'s LazyEDA
+module entry for what's deferred. Install via the `eda` extra.
 
 ## Further reading
 
