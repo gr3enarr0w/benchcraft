@@ -46,10 +46,15 @@ Public entrypoints, in the order a caller would typically use them:
 2. :func:`build_group_confident_joints` -- per-group confident-joint
    matrices ``Q_g``.
 3. :func:`prune_by_noise_rate` / :func:`prune_by_class` / :func:`prune_by_both`
-   -- pruning strategies over the confident joints, each returning a
-   boolean mask. ``prune_by_both`` is a thin composition of the first two
-   (their intersection), mirroring cleanlab's ``find_label_issues(filter_by=
-   "both")`` mode -- see its own docstring below.
+   / :func:`prune_by_predicted_neq_given` / :func:`prune_by_confident_learning`
+   -- pruning strategies, each returning a boolean mask. ``prune_by_both``
+   is a thin composition of the first two (their intersection), mirroring
+   cleanlab's ``find_label_issues(filter_by="both")`` mode -- see its own
+   docstring below. :func:`prune_by_predicted_neq_given` needs no confident
+   joint at all (a plain per-row argmax comparison); :func:`prune_by_confident_learning`
+   flags every off-diagonal confident-joint assignment with no frac/n
+   truncation -- these mirror cleanlab's ``filter_by="predicted_neq_given"``
+   and ``filter_by="confident_learning"`` modes respectively.
 4. :func:`detect_label_errors` -- the one-call convenience entrypoint that
    composes 1-3, matching this package's "one clear entrypoint" pattern
    (see ``dscraft.clean.detect_near_duplicate_text`` for the analogous
@@ -80,6 +85,8 @@ __all__ = [
     "prune_by_noise_rate",
     "prune_by_class",
     "prune_by_both",
+    "prune_by_predicted_neq_given",
+    "prune_by_confident_learning",
     "detect_label_errors",
 ]
 
@@ -687,6 +694,92 @@ def prune_by_both(
     return noise_rate_mask & class_mask
 
 
+def prune_by_predicted_neq_given(
+    labels: Any,
+    probs: Any,
+    groups: Any,
+) -> np.ndarray:
+    """Flag every example whose top predicted class disagrees with its observed label.
+
+    This is the simplest possible label-error heuristic: for each example,
+    flag it whenever ``argmax(probs, axis=1) != observed_label``. Unlike
+    :func:`prune_by_noise_rate`/:func:`prune_by_class`/:func:`prune_by_both`,
+    this needs no confident joint, no per-group threshold, and no ``frac``/
+    ``n`` budget at all -- every disagreeing example is flagged,
+    unconditionally. This mirrors cleanlab's
+    ``find_label_issues(filter_by="predicted_neq_given")`` mode.
+
+    ``groups`` is accepted (and validated via :func:`_validate_and_encode`,
+    alongside ``labels``/``probs``) purely for signature consistency with
+    this module's other pruning entrypoints; group membership plays no role
+    in this heuristic -- there is no per-group threshold to compute here,
+    unlike :func:`prune_by_noise_rate`/:func:`prune_by_class`, which is
+    exactly why this strategy needs no confident joint at all (see the
+    module docstring for why group-conditioning matters for those other
+    two strategies; it is simply inapplicable to a plain per-row argmax
+    comparison).
+
+    Args:
+        labels: 1D array-like of observed (possibly noisy) labels; see
+            :func:`_validate_and_encode` for accepted forms.
+        probs: ``(n_samples, n_classes)`` array of predicted class
+            probabilities; each row must be finite and sum to ~1.0.
+        groups: 1D array-like of group/demographic attribute values, same
+            length as ``labels``/``probs`` (validated for shape but
+            otherwise unused).
+
+    Returns:
+        A boolean mask of shape ``(n_samples,)``; ``True`` marks an example
+        whose predicted class (``argmax`` over ``probs``) disagrees with its
+        observed label.
+    """
+    labels_idx, _groups_arr, _n_classes, _class_names = _validate_and_encode(
+        labels, probs, groups
+    )
+    probs_arr = np.asarray(probs, dtype=float)
+    predicted = np.argmax(probs_arr, axis=1)
+    return predicted != labels_idx
+
+
+def prune_by_confident_learning(
+    joints: Sequence[GroupConfidentJoint],
+    n_samples: int,
+) -> np.ndarray:
+    """Flag every off-diagonal confident-joint assignment, with no frac/n truncation.
+
+    Uses exactly :func:`prune_by_noise_rate`'s candidate-selection rule (a
+    confident-joint assignment, ``assigned_class != -1``, that disagrees
+    with the example's own observed label, ``assigned_class !=
+    observed_label``) but skips that function's top-``frac``/``n``
+    ranking-and-truncation step entirely: *every* off-diagonal candidate is
+    flagged, with no budget. This mirrors cleanlab's
+    ``find_label_issues(filter_by="confident_learning")`` mode, which flags
+    every example the confident joint assigns off-diagonal rather than
+    budgeting to a fixed fraction/count.
+
+    Args:
+        joints: per-group confident joints from
+            :func:`build_group_confident_joints`.
+        n_samples: total number of examples in the original dataset (used
+            to size the returned mask).
+
+    Returns:
+        A boolean mask of shape ``(n_samples,)``; ``True`` marks every
+        example with an off-diagonal confident-joint assignment.
+    """
+    if n_samples < 0:
+        raise ValueError(f"n_samples must be non-negative, got {n_samples!r}.")
+
+    mask = np.zeros(n_samples, dtype=bool)
+    for joint in joints:
+        off_diagonal = (joint.assigned_class != -1) & (
+            joint.assigned_class != joint.observed_labels
+        )
+        if off_diagonal.any():
+            mask[joint.global_indices[off_diagonal]] = True
+    return mask
+
+
 # ---------------------------------------------------------------------------
 # Step 4: one-call convenience entrypoint
 # ---------------------------------------------------------------------------
@@ -704,12 +797,16 @@ def detect_label_errors(
     """DeCoLe end-to-end: compute per-group thresholds and confident joints, then prune.
 
     Composes :func:`compute_group_class_thresholds` ->
-    :func:`build_group_confident_joints` -> (:func:`prune_by_noise_rate`,
-    :func:`prune_by_class`, or :func:`prune_by_both`, selected by
-    ``strategy``) into one call, matching this package's "one clear
-    entrypoint" pattern (see
-    ``dscraft.clean.detect_near_duplicate_text`` in ``dedup.py``/
-    ``embeddings.py`` for the analogous convenience wrapper).
+    :func:`build_group_confident_joints` -> one of :func:`prune_by_noise_rate`,
+    :func:`prune_by_class`, :func:`prune_by_both`,
+    :func:`prune_by_predicted_neq_given`, or :func:`prune_by_confident_learning`
+    (selected by ``strategy``) into one call, matching this package's "one
+    clear entrypoint" pattern (see ``dscraft.clean.detect_near_duplicate_text``
+    in ``dedup.py``/``embeddings.py`` for the analogous convenience
+    wrapper). ``strategy="predicted_neq_given"`` needs no confident joint at
+    all, so it skips :func:`compute_group_class_thresholds`/
+    :func:`build_group_confident_joints` entirely and calls
+    :func:`prune_by_predicted_neq_given` directly.
 
     Args:
         labels: 1D array-like of observed (possibly noisy) labels; see
@@ -719,19 +816,41 @@ def detect_label_errors(
         groups: 1D array-like of group/demographic attribute values, same
             length as ``labels``/``probs``.
         strategy: ``"noise_rate"`` (default, see :func:`prune_by_noise_rate`),
-            ``"class"`` (see :func:`prune_by_class`), or ``"both"`` (see
+            ``"class"`` (see :func:`prune_by_class`), ``"both"`` (see
             :func:`prune_by_both` -- the intersection of the other two,
-            mirroring cleanlab's ``find_label_issues(filter_by="both")``).
-            Any other value raises ``ValueError``.
-        frac: fraction of examples to flag when ``n`` is not given.
+            mirroring cleanlab's ``find_label_issues(filter_by="both")``),
+            ``"predicted_neq_given"`` (see :func:`prune_by_predicted_neq_given`
+            -- ``frac``/``n`` are ignored for this strategy, since it flags
+            every disagreeing example unconditionally), or
+            ``"confident_learning"`` (see :func:`prune_by_confident_learning`
+            -- ``frac``/``n`` are likewise ignored). Any other value raises
+            ``ValueError``.
+        frac: fraction of examples to flag when ``n`` is not given. Ignored
+            for ``strategy="predicted_neq_given"`` or
+            ``strategy="confident_learning"``.
         n: exact number of examples to flag; takes precedence over ``frac``.
+            Ignored for ``strategy="predicted_neq_given"`` or
+            ``strategy="confident_learning"``.
 
     Returns:
         A boolean mask of shape ``(n_samples,)``; ``True`` marks a flagged
         (likely-mislabeled) example.
     """
-    if strategy not in ("noise_rate", "class", "both"):
-        raise ValueError(f"strategy must be 'noise_rate', 'class', or 'both', got {strategy!r}.")
+    valid_strategies = (
+        "noise_rate",
+        "class",
+        "both",
+        "predicted_neq_given",
+        "confident_learning",
+    )
+    if strategy not in valid_strategies:
+        raise ValueError(
+            "strategy must be 'noise_rate', 'class', 'both', 'predicted_neq_given', "
+            f"or 'confident_learning', got {strategy!r}."
+        )
+
+    if strategy == "predicted_neq_given":
+        return prune_by_predicted_neq_given(labels, probs, groups)
 
     thresholds = compute_group_class_thresholds(labels, probs, groups)
     joints = build_group_confident_joints(labels, probs, groups, thresholds=thresholds)
@@ -741,4 +860,6 @@ def detect_label_errors(
         return prune_by_noise_rate(joints, n_samples, frac=frac, n=n)
     if strategy == "class":
         return prune_by_class(joints, n_samples, frac=frac, n=n)
+    if strategy == "confident_learning":
+        return prune_by_confident_learning(joints, n_samples)
     return prune_by_both(joints, n_samples, frac=frac, n=n)

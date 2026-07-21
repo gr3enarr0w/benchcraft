@@ -146,10 +146,13 @@ into one audit-then-clean workflow:
   per-(group, class) confidence thresholds instead of one global threshold,
   avoiding the standard confident-learning failure mode of over-pruning a
   lower-confidence-but-correctly-labeled group's examples. Pruning supports
-  three selectable strategies mirroring cleanlab's `find_label_issues`
-  filter modes — `"noise_rate"` (default), `"class"`, and `"both"` (their
-  intersection, via `prune_by_both`) — added as part of a cleanlab parity
-  audit.
+  five selectable strategies mirroring cleanlab's `find_label_issues`
+  filter modes — `"noise_rate"` (default), `"class"`, `"both"` (their
+  intersection, via `prune_by_both`), `"predicted_neq_given"` (flags every
+  `argmax(probs) != observed_label` disagreement, no confident joint or
+  budget needed), and `"confident_learning"` (every off-diagonal
+  confident-joint assignment, unbudgeted) — added across two cleanlab
+  parity audit passes.
 - **Train/test contamination auditing** (`contamination.py`) — a two-stage
   pipeline: cheap LSHBloom MinHash/Bloom-filter candidate screening (via
   `datasketch`) over every row, then optional Min-K%++ log-probability

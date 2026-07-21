@@ -22,7 +22,9 @@ from dscraft.clean.label_errors import (
     detect_label_errors,
     prune_by_both,
     prune_by_class,
+    prune_by_confident_learning,
     prune_by_noise_rate,
+    prune_by_predicted_neq_given,
 )
 
 
@@ -473,6 +475,130 @@ def test_prune_by_both_rejects_invalid_frac_and_n():
 
 
 # ---------------------------------------------------------------------------
+# prune_by_predicted_neq_given
+# ---------------------------------------------------------------------------
+
+
+def test_prune_by_predicted_neq_given_flags_argmax_disagreement():
+    """Flags exactly the examples whose top predicted class differs from
+    their observed label -- no confident joint, no frac/n budget."""
+    labels = np.array([0, 0, 1, 1], dtype=int)
+    # argmax(probs) per row: 0, 1, 1, 0 -- disagrees with the observed label
+    # at positions 1 (predicted 1, observed 0) and 3 (predicted 0, observed 1).
+    probs = _make_probs([0.9, 0.3, 0.2, 0.6])
+    groups = np.array(["g", "g", "g", "g"], dtype=object)
+
+    mask = prune_by_predicted_neq_given(labels, probs, groups)
+    assert mask.dtype == bool
+    np.testing.assert_array_equal(mask, [False, True, False, True])
+
+
+def test_prune_by_predicted_neq_given_all_agree_flags_nothing():
+    labels = np.array([0, 0, 1, 1], dtype=int)
+    probs = _make_probs([0.9, 0.8, 0.2, 0.1])
+    groups = np.array(["g", "g", "g", "g"], dtype=object)
+
+    mask = prune_by_predicted_neq_given(labels, probs, groups)
+    assert mask.sum() == 0
+
+
+def test_prune_by_predicted_neq_given_with_categorical_labels():
+    """The argmax-disagreement heuristic works the same way over categorical
+    labels once _validate_and_encode maps them to indices."""
+    labels = np.array(["cat", "dog", "cat", "dog"], dtype=object)
+    # "cat" sorts before "dog" -> cat=0, dog=1.
+    # Row 0: predicted class 0 (cat), observed cat -> agree.
+    # Row 1: predicted class 0 (cat), observed dog -> disagree.
+    # Row 2: predicted class 1 (dog), observed cat -> disagree.
+    # Row 3: predicted class 1 (dog), observed dog -> agree.
+    probs = _make_probs([0.9, 0.7, 0.2, 0.1])
+    groups = np.array(["g", "g", "g", "g"], dtype=object)
+
+    mask = prune_by_predicted_neq_given(labels, probs, groups)
+    np.testing.assert_array_equal(mask, [False, True, True, False])
+
+
+def test_prune_by_predicted_neq_given_reuses_shared_validation():
+    """Mismatched lengths and other _validate_and_encode failures propagate
+    the same way as the other pruning entrypoints."""
+    labels = np.array([0, 1, 0])
+    probs = _make_probs([0.9, 0.1])  # only 2 rows, labels has 3
+    groups = np.array(["a", "b"], dtype=object)
+    with pytest.raises(ValueError, match="same length"):
+        prune_by_predicted_neq_given(labels, probs, groups)
+
+
+# ---------------------------------------------------------------------------
+# prune_by_confident_learning
+# ---------------------------------------------------------------------------
+
+
+def test_prune_by_confident_learning_flags_every_off_diagonal_no_budget():
+    """Flags exactly the same candidate example prune_by_noise_rate would
+    flag at frac=0.1, but with no frac/n truncation at all."""
+    labels, probs, groups = _noise_rate_fixture()
+    joints = build_group_confident_joints(labels, probs, groups)
+
+    mask = prune_by_confident_learning(joints, n_samples=10)
+    assert mask.dtype == bool
+    assert mask.sum() == 1
+    assert mask[9]
+
+
+def test_prune_by_confident_learning_flags_all_off_diagonal_candidates_without_truncation():
+    """Unlike prune_by_noise_rate, prune_by_confident_learning never
+    truncates to a budget -- every off-diagonal candidate is flagged."""
+    # Two independently mislabeled examples this time (indices 4 and 9).
+    labels = np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 0], dtype=int)
+    class0_probs = [0.90, 0.90, 0.90, 0.90, 0.05, 0.15, 0.12, 0.08, 0.05, 0.05]
+    probs = _make_probs(class0_probs)
+    groups = np.array(["g"] * 10, dtype=object)
+    joints = build_group_confident_joints(labels, probs, groups)
+
+    mask = prune_by_confident_learning(joints, n_samples=10)
+    assert mask.sum() == 2
+    assert mask[4]
+    assert mask[9]
+
+
+def test_prune_by_confident_learning_no_candidates_flags_nothing():
+    labels = np.array([0, 0, 0], dtype=int)
+    probs = _make_probs([0.9, 0.85, 0.95])
+    groups = np.array(["g", "g", "g"], dtype=object)
+    joints = build_group_confident_joints(labels, probs, groups)
+
+    mask = prune_by_confident_learning(joints, n_samples=3)
+    assert mask.sum() == 0
+
+
+def test_prune_by_confident_learning_with_categorical_labels():
+    """The candidate-selection rule is unaffected by categorical label
+    encoding -- same off-diagonal example is flagged as the integer-label
+    fixture, once labels are mapped to indices by _validate_and_encode."""
+    # "cat" sorts before "dog" -> cat=0, dog=1, matching _noise_rate_fixture's
+    # integer labels [0]*5 + [1]*4 + [0] exactly.
+    labels = np.array(
+        ["cat", "cat", "cat", "cat", "cat", "dog", "dog", "dog", "dog", "cat"],
+        dtype=object,
+    )
+    class0_probs = [0.90, 0.90, 0.90, 0.90, 0.90, 0.15, 0.12, 0.08, 0.05, 0.05]
+    probs = _make_probs(class0_probs)
+    groups = np.array(["g"] * 10, dtype=object)
+    joints = build_group_confident_joints(labels, probs, groups)
+
+    mask = prune_by_confident_learning(joints, n_samples=10)
+    assert mask.sum() == 1
+    assert mask[9]
+
+
+def test_prune_by_confident_learning_rejects_negative_n_samples():
+    labels, probs, groups = _noise_rate_fixture()
+    joints = build_group_confident_joints(labels, probs, groups)
+    with pytest.raises(ValueError, match="non-negative"):
+        prune_by_confident_learning(joints, n_samples=-1)
+
+
+# ---------------------------------------------------------------------------
 # Step 4: detect_label_errors
 # ---------------------------------------------------------------------------
 
@@ -499,6 +625,22 @@ def test_detect_label_errors_both_strategy():
     noise_rate_mask = detect_label_errors(labels, probs, groups, strategy="noise_rate", frac=0.5)
     class_mask = detect_label_errors(labels, probs, groups, strategy="class", frac=0.5)
     np.testing.assert_array_equal(mask, noise_rate_mask & class_mask)
+    assert mask[9]
+
+
+def test_detect_label_errors_predicted_neq_given_strategy():
+    labels, probs, groups = _noise_rate_fixture()
+    mask = detect_label_errors(labels, probs, groups, strategy="predicted_neq_given")
+    expected = prune_by_predicted_neq_given(labels, probs, groups)
+    np.testing.assert_array_equal(mask, expected)
+    assert mask[9]  # predicted class 1 (0.95) != observed label 0
+    assert not mask[:9].any()
+
+
+def test_detect_label_errors_confident_learning_strategy():
+    labels, probs, groups = _noise_rate_fixture()
+    mask = detect_label_errors(labels, probs, groups, strategy="confident_learning")
+    assert mask.sum() == 1
     assert mask[9]
 
 
