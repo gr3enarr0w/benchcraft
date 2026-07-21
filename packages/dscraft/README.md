@@ -31,7 +31,7 @@ what's here today and how to install/run it.
 | [`dscraft.core`](#dscraftcore) | *(base install)* | Shared substrate: three-tier data conventions, OTel GenAI telemetry helpers, license-isolation policy, shared sandbox executor. |
 | [`dscraft.automl`](#dscraftautoml) | `automl` (+ `automl-onnx`) | Clean-room tabular AutoML — `.compile()` fuses a fitted `sklearn.pipeline.Pipeline` into one portable ONNX graph via `skl2onnx`. |
 | [`dscraft.clean`](#dscraftclean) | `clean` | Data-quality firewall — ONNX Runtime (PyTorch-free) text embeddings feeding cosine-similarity near-duplicate detection. |
-| [`dscraft.forecast`](#dscraftforecast) | `forecast` | Classical statistical forecasting (AutoARIMA/AutoETS via Nixtla `statsforecast`) over a Tier-1 Arrow-backed pipeline, plus a basic backtest report. |
+| [`dscraft.forecast`](#dscraftforecast) | `forecast` | Classical statistical forecasting (the full Nixtla `statsforecast` classical catalog: AutoARIMA/AutoETS/AutoCES/AutoTheta autofits, simple baselines, Croston) over a Tier-1 Arrow-backed pipeline, plus a basic backtest report. |
 | [`dscraft.graph`](#dscraftgraph) | `graph` | Sparse graph ML — a concrete Tier-2 COO↔CSR/CSC tensor adapter (PyG↔SciPy) plus a minimal GCN forward pass. |
 | [`dscraft.vision`](#dscraftvision) | `vision` | Computer vision — a concrete Tier-3 dense image pipeline (decode→augment→tensor) plus a small CNN exported via `torch.export()`→ONNX. |
 | [`dscraft.tune`](#dscrafttune) | `tune` | Local LLM fine-tuning — an Adapter-Factory `BaseTrainingAdapter` interface with a `ProgrammaticAdapter` doing real (tiny) LoRA fine-tuning via `peft`/`transformers`. |
@@ -110,6 +110,29 @@ scikit-learn install required at serving time. Base runtime deps
 `skl2onnx`/`onnx`/`onnxruntime` (needed only for `.compile()` itself, and
 lazily imported) install via the separate `automl-onnx` extra.
 
+`dscraft.automl.build_model(name, task, **kwargs)` builds an unfitted,
+sklearn-compatible gradient-boosted-tree estimator from a caller-selected
+backend -- XGBoost, LightGBM, or CatBoost, all three equally supported per
+this project's multi-backend design principle (none is a "default").
+`SUPPORTED_CLASSIFIERS`/`SUPPORTED_REGRESSORS` are the name -> class
+allowlists `build_model` dispatches through, mirroring
+`dscraft.forecast`'s `SUPPORTED_MODELS` pattern. All three libraries are
+base runtime deps of the `automl` extra (not a separate extra).
+
+`dscraft.automl.build_clusterer(name, **kwargs)` builds an unfitted,
+sklearn-compatible clustering estimator -- currently HDBSCAN, via
+scikit-learn's own built-in `sklearn.cluster.HDBSCAN` (no new dependency
+needed), exposed through `SUPPORTED_CLUSTERERS`. This is an independent,
+unsupervised capability -- it does not require the supervised model
+allowlist above.
+
+`dscraft.automl.build_resampler(name, **kwargs)` builds an unfitted
+`imbalanced-learn` resampler -- `RandomOverSampler`, `SMOTE`, or
+`RandomUnderSampler`, exposed through `SUPPORTED_RESAMPLERS` -- for
+rebalancing a skewed classification training set ahead of the classifier
+path above. `imbalanced-learn` is a base runtime dep of the `automl`
+extra.
+
 ## `dscraft.clean`
 
 A data-quality firewall for a training DataFrame. The primary entrypoint is
@@ -157,12 +180,36 @@ pairs. Install via the `clean` extra.
 
 ## `dscraft.forecast`
 
-Classical statistical forecasting (AutoARIMA/AutoETS via Nixtla's
-`statsforecast`) over a Tier-1 Arrow-backed input pipeline, with a basic
-train/test backtest reporting MAE/RMSE. The tree-based ML branch, TSFM
-zero-shot branch, self-healing preprocessing, and conformal-prediction
-leaderboard from the full LazyForecast design are deferred. Install via
-the `forecast` extra.
+Classical statistical forecasting via Nixtla's `statsforecast` over a
+Tier-1 Arrow-backed input pipeline, with a basic train/test backtest
+reporting MAE/RMSE. `SUPPORTED_MODELS` covers the full classical catalog
+`statsforecast` ships out of the box: autoregressive/exponential-smoothing
+autofits (`AutoARIMA`, `AutoETS`, `AutoCES`, `AutoTheta`), simple baselines
+(`Naive`, `SeasonalNaive`, `RandomWalkWithDrift`, `HistoricAverage`,
+`WindowAverage`, `SeasonalWindowAverage`), and the Croston family for
+intermittent-demand series (`CrostonClassic`, `CrostonOptimized`,
+`CrostonSBA`) — zero new dependencies, since every one of these classes
+already ships in `statsforecast`. Backtest MAE/RMSE are computed via
+Nixtla's `utilsforecast` (the shared metrics/plotting/preprocessing-helper
+layer the rest of the nixtlaverse already assumes) rather than
+hand-rolled, so future backends added to this subpackage share one
+canonical metric implementation. `decompose()` exposes STL/MSTL time
+series decomposition (plus an optional Box-Cox transform) as a
+standalone, inspectable diagnostic -- trend/seasonal/residual components
+returned as a tidy long-format DataFrame, not folded silently into
+`forecast()` -- via `statsmodels`/`scipy`, both already transitively
+available in this extra. The tree-based ML branch, TSFM zero-shot branch,
+self-healing preprocessing, and conformal-prediction leaderboard from the
+full LazyForecast design are deferred. Install via the `forecast` extra.
+
+In addition to the hermetic synthetic-panel tests and the `statsmodels`-
+bundled co2/nile real-dataset validation, this subpackage's test suite
+also validates `forecast()`/`backtest()` against a real published
+forecasting-competition benchmark (the M3 competition's "Other" group) via
+Nixtla's `datasetsforecast` -- a test-only dependency (like `statsmodels`)
+that downloads its data over the network on first use and is skipped
+(not failed) when offline; see
+`tests/forecast/test_datasetsforecast_validation.py`.
 
 ## `dscraft.graph`
 
@@ -259,6 +306,28 @@ result objects. Outlier/anomaly detection and time-series-specific EDA
 (despite `dscraft.forecast` being an obvious future consumer) are out of
 scope for this pass — see `DSCraft_Unified_Architecture.md`'s LazyEDA
 module entry for what's deferred. Install via the `eda` extra.
+
+For publication-quality, static, layered exploratory plots (as an
+alternative to — not a replacement for — the interactive single-file HTML
+report above), `dscraft.eda.plots` exposes `association_heatmap` and
+`column_distribution`, which turn an `AssociationMatrixResult` or a
+`ColumnSummary` you already have (e.g. from `profile.association_matrix`
+or `profile.report_data.column_summaries`) into a `plotnine.ggplot`
+object you can further customize and `.save(path)` yourself:
+
+```python
+from dscraft.eda import LazyEDA, association_heatmap, column_distribution
+
+profile = LazyEDA().profile("orders.parquet")
+association_heatmap(profile.association_matrix).save("associations.png")
+
+summaries = {s.name: s for s in profile.report_data.column_summaries}
+column_distribution(summaries["amount"]).save("amount_distribution.png")
+```
+
+This is an optional, separately-gated capability: install the `eda-plotnine`
+extra (`pip install "dscraft[eda,eda-plotnine]"`) to use it — the base `eda`
+extra alone does not pull in `plotnine`/matplotlib.
 
 ## Examples
 
