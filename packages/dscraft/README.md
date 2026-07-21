@@ -110,6 +110,15 @@ scikit-learn install required at serving time. Base runtime deps
 `skl2onnx`/`onnx`/`onnxruntime` (needed only for `.compile()` itself, and
 lazily imported) install via the separate `automl-onnx` extra.
 
+`dscraft.automl.build_model(name, task, **kwargs)` builds an unfitted,
+sklearn-compatible gradient-boosted-tree estimator from a caller-selected
+backend -- XGBoost, LightGBM, or CatBoost, all three equally supported per
+this project's multi-backend design principle (none is a "default").
+`SUPPORTED_CLASSIFIERS`/`SUPPORTED_REGRESSORS` are the name -> class
+allowlists `build_model` dispatches through, mirroring
+`dscraft.forecast`'s `SUPPORTED_MODELS` pattern. All three libraries are
+base runtime deps of the `automl` extra (not a separate extra).
+
 ## `dscraft.clean`
 
 A data-quality firewall for a training DataFrame. The primary entrypoint is
