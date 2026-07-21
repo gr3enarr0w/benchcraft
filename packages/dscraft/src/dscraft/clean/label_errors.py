@@ -59,6 +59,11 @@ Public entrypoints, in the order a caller would typically use them:
    composes 1-3, matching this package's "one clear entrypoint" pattern
    (see ``dscraft.clean.detect_near_duplicate_text`` for the analogous
    entrypoint in ``dedup.py``/``embeddings.py``).
+5. :func:`label_quality_scores` -- a continuous, per-example label-quality
+   score (lower means more likely mislabeled) reusing the same raw
+   per-example signals the ``prune_by_*`` functions already compute
+   internally, for callers who want to triage by degree of suspicion
+   instead of only a fixed-budget boolean mask.
 
 **Expected input form for ``labels``.** ``labels`` (the *observed*, possibly
 noisy labels) may be given as either integer class indices in
@@ -87,6 +92,7 @@ __all__ = [
     "prune_by_both",
     "prune_by_predicted_neq_given",
     "prune_by_confident_learning",
+    "label_quality_scores",
     "detect_label_errors",
 ]
 
@@ -778,6 +784,90 @@ def prune_by_confident_learning(
         if off_diagonal.any():
             mask[joint.global_indices[off_diagonal]] = True
     return mask
+
+
+def label_quality_scores(
+    joints: Sequence[GroupConfidentJoint],
+    n_samples: int,
+    *,
+    method: str = "noise_rate",
+) -> np.ndarray:
+    """Continuous per-example label-quality scores -- lower means more suspect.
+
+    Exposes the raw per-example scoring signals every ``prune_by_*``
+    function already computes internally to rank candidates before
+    truncating to a fixed-budget boolean mask (see
+    :class:`GroupConfidentJoint`'s ``assigned_class_joint_prob``,
+    ``own_label_prob``, and ``own_label_threshold`` fields) as one public,
+    continuous score array. This mirrors cleanlab's
+    ``get_label_quality_scores``/``find_label_issues(return_indices_ranked_by=
+    ...)`` continuous-score convention: **lower score means more likely
+    mislabeled**, matching cleanlab's documented score direction.
+
+    No new scoring logic is introduced here -- each ``method`` reuses
+    exactly the signal its same-named ``prune_by_*`` counterpart already
+    computes to rank candidates:
+
+    - ``method="noise_rate"``: scores exactly :func:`prune_by_noise_rate`'s
+      candidate set (an off-diagonal confident-joint assignment,
+      ``assigned_class != -1 and assigned_class != observed_label``) as
+      ``1.0 - assigned_class_joint_prob``. :func:`prune_by_noise_rate`
+      flags the *highest* ``assigned_class_joint_prob`` cells first (the
+      joint estimates those cells contain the largest fraction of true
+      label noise), so ``1.0 - assigned_class_joint_prob`` is lowest --
+      most suspect -- for exactly the examples that strategy would flag
+      first. Examples with no off-diagonal confident-joint assignment are
+      **not scoreable** under this method and get ``NaN``.
+    - ``method="class"``: exactly :func:`prune_by_class`'s own ranking
+      score, ``own_label_prob - own_label_threshold``, unchanged (already
+      lower-is-more-suspect: an example far below its own group/class's
+      typical confidence gets the most negative score, which
+      :func:`prune_by_class` already flags first). Examples whose
+      ``(group, observed-label)`` threshold is ``NaN`` (that class was
+      never observed anywhere in the dataset -- see
+      :func:`compute_group_class_thresholds`) are **not scoreable** under
+      this method and get ``NaN``, mirroring
+      :class:`GroupClassThresholds`'s existing NaN-fallback convention for
+      "no data anywhere to compare against."
+
+    Args:
+        joints: per-group confident joints from
+            :func:`build_group_confident_joints`.
+        n_samples: total number of examples in the original dataset (used
+            to size the returned array).
+        method: ``"noise_rate"`` (default) or ``"class"``; any other value
+            raises ``ValueError``.
+
+    Returns:
+        A float array of shape ``(n_samples,)``. Lower values mean more
+        likely mislabeled; ``NaN`` marks an example that is not scoreable
+        under the requested ``method`` (see above).
+
+    Raises:
+        ValueError: if ``method`` is not ``"noise_rate"`` or ``"class"``, or
+            if ``n_samples`` is negative.
+    """
+    if method not in ("noise_rate", "class"):
+        raise ValueError(f"method must be 'noise_rate' or 'class', got {method!r}.")
+    if n_samples < 0:
+        raise ValueError(f"n_samples must be non-negative, got {n_samples!r}.")
+
+    scores = np.full(n_samples, np.nan, dtype=float)
+    for joint in joints:
+        if method == "noise_rate":
+            off_diagonal = (joint.assigned_class != -1) & (
+                joint.assigned_class != joint.observed_labels
+            )
+            if off_diagonal.any():
+                scores[joint.global_indices[off_diagonal]] = (
+                    1.0 - joint.assigned_class_joint_prob[off_diagonal]
+                )
+        else:
+            score = joint.own_label_prob - joint.own_label_threshold
+            valid = ~np.isnan(score)
+            if valid.any():
+                scores[joint.global_indices[valid]] = score[valid]
+    return scores
 
 
 # ---------------------------------------------------------------------------

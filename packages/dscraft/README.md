@@ -152,7 +152,11 @@ into one audit-then-clean workflow:
   `argmax(probs) != observed_label` disagreement, no confident joint or
   budget needed), and `"confident_learning"` (every off-diagonal
   confident-joint assignment, unbudgeted) — added across two cleanlab
-  parity audit passes.
+  parity audit passes. `label_quality_scores()` additionally exposes a
+  continuous, per-example label-quality score (lower means more suspect)
+  reusing the same signals the `prune_by_*` functions rank internally,
+  for callers who want to triage by degree of suspicion instead of a
+  fixed-budget boolean mask.
 - **Train/test contamination auditing** (`contamination.py`) — a two-stage
   pipeline: cheap LSHBloom MinHash/Bloom-filter candidate screening (via
   `datasketch`) over every row, then optional Min-K%++ log-probability
