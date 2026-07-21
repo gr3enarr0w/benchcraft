@@ -512,6 +512,18 @@ def build_group_confident_joints(
 # ---------------------------------------------------------------------------
 
 
+def _off_diagonal_candidates(joint: GroupConfidentJoint) -> np.ndarray:
+    """True where this group's confident-joint assignment disagrees with the observed label.
+
+    Shared by :func:`prune_by_noise_rate`, :func:`prune_by_confident_learning`,
+    and the ``method="noise_rate"`` branch of :func:`label_quality_scores`: a
+    candidate example is one with a confident-joint assignment
+    (``assigned_class != -1``) that disagrees with its own observed label
+    (``assigned_class != observed_labels``).
+    """
+    return (joint.assigned_class != -1) & (joint.assigned_class != joint.observed_labels)
+
+
 def prune_by_noise_rate(
     joints: Sequence[GroupConfidentJoint],
     n_samples: int,
@@ -562,9 +574,7 @@ def prune_by_noise_rate(
     index_chunks: list[np.ndarray] = []
     score_chunks: list[np.ndarray] = []
     for joint in joints:
-        off_diagonal = (joint.assigned_class != -1) & (
-            joint.assigned_class != joint.observed_labels
-        )
+        off_diagonal = _off_diagonal_candidates(joint)
         if not off_diagonal.any():
             continue
         index_chunks.append(joint.global_indices[off_diagonal])
@@ -778,9 +788,7 @@ def prune_by_confident_learning(
 
     mask = np.zeros(n_samples, dtype=bool)
     for joint in joints:
-        off_diagonal = (joint.assigned_class != -1) & (
-            joint.assigned_class != joint.observed_labels
-        )
+        off_diagonal = _off_diagonal_candidates(joint)
         if off_diagonal.any():
             mask[joint.global_indices[off_diagonal]] = True
     return mask
@@ -855,9 +863,7 @@ def label_quality_scores(
     scores = np.full(n_samples, np.nan, dtype=float)
     for joint in joints:
         if method == "noise_rate":
-            off_diagonal = (joint.assigned_class != -1) & (
-                joint.assigned_class != joint.observed_labels
-            )
+            off_diagonal = _off_diagonal_candidates(joint)
             if off_diagonal.any():
                 scores[joint.global_indices[off_diagonal]] = (
                     1.0 - joint.assigned_class_joint_prob[off_diagonal]
