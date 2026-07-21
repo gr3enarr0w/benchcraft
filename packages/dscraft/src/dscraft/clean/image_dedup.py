@@ -199,9 +199,10 @@ def resize_and_normalize(image: np.ndarray, *, size: int = 8) -> np.ndarray:
     Raises:
         ValueError: if ``image`` is not 2D or 3D, its (only) trailing
             dimension is present but not exactly 3 channels, either spatial
-            dimension is zero, or ``image``'s dtype/value-range is not one
-            of the supported cases (``uint8``, ``uint16``, or float already
-            in ``[0, 1]`` or ``[0, 255]``).
+            dimension is zero, ``size`` is not strictly positive, or
+            ``image``'s dtype/value-range is not one of the supported
+            cases (``uint8``, ``uint16``, or float already in ``[0, 1]``
+            or ``[0, 255]``).
     """
     arr = np.asarray(image)
     if arr.ndim == 2:
@@ -216,6 +217,10 @@ def resize_and_normalize(image: np.ndarray, *, size: int = 8) -> np.ndarray:
         raise ValueError(
             "Expected an image with non-zero height and width, got shape "
             f"{arr.shape!r}."
+        )
+    if size <= 0:
+        raise ValueError(
+            f"Expected a positive resize target size, got size={size!r}."
         )
 
     row_idx = np.minimum((np.arange(size) * height) // size, height - 1)

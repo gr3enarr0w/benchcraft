@@ -174,6 +174,17 @@ def test_resize_and_normalize_rejects_empty_spatial_dimensions():
         resize_and_normalize(np.zeros((0, 0, 3), dtype=np.uint8))
 
 
+def test_resize_and_normalize_rejects_non_positive_size():
+    """A zero or negative resize-target ``size`` must raise a clear
+    ValueError up front, not silently misbehave (or raise an unclear
+    error) deep inside the row_idx/col_idx index computation."""
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match=r"positive resize target size"):
+        resize_and_normalize(image, size=0)
+    with pytest.raises(ValueError, match=r"positive resize target size"):
+        resize_and_normalize(image, size=-1)
+
+
 def test_resize_and_normalize_rejects_unsupported_dtype():
     with pytest.raises(ValueError, match=r"Unsupported image dtype"):
         resize_and_normalize(np.zeros((4, 4, 3), dtype=np.int32))
