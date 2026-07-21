@@ -35,7 +35,6 @@ from typing import Any
 
 from catboost import CatBoostClassifier, CatBoostRegressor
 from lightgbm import LGBMClassifier, LGBMRegressor
-from sklearn.base import BaseEstimator
 from xgboost import XGBClassifier, XGBRegressor
 
 __all__ = [
@@ -44,11 +43,19 @@ __all__ = [
     "build_model",
 ]
 
+#: Concrete estimator types this module ever builds. CatBoost's estimators
+#: do not reliably inherit from `sklearn.base.BaseEstimator` across
+#: catboost versions, so this module widens to an explicit union of the
+#: six concrete classes actually returned, rather than annotating against
+#: `BaseEstimator`.
+_ClassifierType = XGBClassifier | LGBMClassifier | CatBoostClassifier
+_RegressorType = XGBRegressor | LGBMRegressor | CatBoostRegressor
+
 #: Classification backends this module supports, keyed by caller-facing
 #: name. All three are equally-supported options (multi-backend design
 #: principle) -- none is a "default"; the caller must name one explicitly
 #: via :func:`build_model`.
-SUPPORTED_CLASSIFIERS: dict[str, type] = {
+SUPPORTED_CLASSIFIERS: dict[str, type[_ClassifierType]] = {
     "XGBoost": XGBClassifier,
     "LightGBM": LGBMClassifier,
     "CatBoost": CatBoostClassifier,
@@ -56,7 +63,7 @@ SUPPORTED_CLASSIFIERS: dict[str, type] = {
 
 #: Regression backends this module supports, keyed by caller-facing name.
 #: Same multi-backend posture as :data:`SUPPORTED_CLASSIFIERS`.
-SUPPORTED_REGRESSORS: dict[str, type] = {
+SUPPORTED_REGRESSORS: dict[str, type[_RegressorType]] = {
     "XGBoost": XGBRegressor,
     "LightGBM": LGBMRegressor,
     "CatBoost": CatBoostRegressor,
@@ -64,13 +71,13 @@ SUPPORTED_REGRESSORS: dict[str, type] = {
 
 #: Valid ``task`` values for :func:`build_model`, mapped to the allowlist
 #: dict each selects from.
-_TASK_ALLOWLISTS: dict[str, dict[str, type]] = {
+_TASK_ALLOWLISTS: dict[str, dict[str, type[_ClassifierType]] | dict[str, type[_RegressorType]]] = {
     "classification": SUPPORTED_CLASSIFIERS,
     "regression": SUPPORTED_REGRESSORS,
 }
 
 
-def build_model(name: str, task: str, **kwargs: Any) -> BaseEstimator:
+def build_model(name: str, task: str, **kwargs: Any) -> _ClassifierType | _RegressorType:
     """Build an unfitted, sklearn-compatible gradient-boosted-tree estimator.
 
     This is the one canonical model-backend factory for `dscraft.automl`
