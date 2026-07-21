@@ -62,30 +62,46 @@ lines). Structure:
 
 ### Genuinely generic vs. `clean`-specific
 
-Everything in `embeddings.py` is generic — there is **no dedup-specific
-post-processing baked into it**. Confirmed by reading `dedup.py` (188
-lines) and `clean/__init__.py`: `dedup.py` never imports from
-`embeddings.py` at all (only references it in a docstring type-hint
-comment); the only place they're composed is
+The runtime embedding *infrastructure* in `embeddings.py` — specifically
+the `EmbeddingModel` class, the `PreprocessorOutput` union type, and the
+`hashing_bag_of_words_vectorizer()` preprocessor — is generic: there is
+**no dedup-specific post-processing baked into any of it**. Confirmed by
+reading `dedup.py` (188 lines) and `clean/__init__.py`: `dedup.py` never
+imports from `embeddings.py` at all (only references it in a docstring
+type-hint comment); the only place they're composed is
 `clean.detect_near_duplicate_text()` in `clean/__init__.py`, which is a
 ~10-line convenience wrapper that calls `model.embed(texts)` then
 `find_near_duplicates(embeddings, threshold=...)` — two independently
 testable, independently reusable pieces glued together at the call site,
-not inside `embeddings.py` itself. So if promotion happened, effectively
-the *entire* `embeddings.py` module (minus one line of module-specific
-context, see below) would move, not a partial extraction.
+not inside `embeddings.py` itself. So *if* promotion happened, the
+promotable surface is narrower than "the whole module": it is these three
+generic names only, not everything currently in the file.
 
-The one thing that is legitimately `clean`-owned, not generic
-infrastructure: **`MODEL_ALLOWLIST`, `RECOMMENDED_MODEL_NAME`, and
-`download_recommended_model()`'s specific pinned checkpoint choice**
-(`Xenova/all-MiniLM-L6-v2`). This is `clean`'s own model recommendation,
-not a canonical "the one embedding model dscraft ships." Per
-`dscraft.core.licensing`'s documented pattern, each module owns its own
-`Allowlist` instance — a future `dscraft.agent` would very plausibly want a
-*different* recommended checkpoint (e.g. one tuned for retrieval rather
-than dedup similarity, or a multilingual model), so this piece should stay
-per-module even if the generic `EmbeddingModel`/ONNX-loading machinery
-moves.
+Two things stay `clean`-owned and must **not** be described as
+promotable, even though they live in the same file today:
+
+1. **Policy/config, not infrastructure — `MODEL_ALLOWLIST`,
+   `RECOMMENDED_MODEL_NAME`, and `download_recommended_model()`'s specific
+   pinned checkpoint choice** (`Xenova/all-MiniLM-L6-v2`). This is `clean`'s
+   own model recommendation, not a canonical "the one embedding model
+   dscraft ships." Per `dscraft.core.licensing`'s documented pattern, each
+   module owns its own `Allowlist` instance — a future `dscraft.agent`
+   would very plausibly want a *different* recommended checkpoint (e.g. one
+   tuned for retrieval rather than dedup similarity, or a multilingual
+   model), so this piece should stay per-module even if the generic
+   `EmbeddingModel`/ONNX-loading machinery moves.
+2. **Test/example fixtures, not production infrastructure —
+   `build_synthetic_embedding_onnx()` and `build_synthetic_embedding_model()`**.
+   These hand-build a tiny, non-semantic ONNX graph purely so `clean`'s own
+   test suite and `examples/dedup_example.py` can run hermetically with no
+   network access and no bundled model file. They are not generic embedding
+   *infrastructure* in the same sense as `EmbeddingModel` — they are
+   `clean`-specific test/example scaffolding that happens to use the
+   generic `EmbeddingModel`/ONNX machinery, the same way any other module's
+   own hermetic test fixtures would. Per this package's per-module test
+   layout convention, these belong in `clean`'s own tests/examples
+   permanently, regardless of whether `EmbeddingModel` itself is ever
+   promoted.
 
 ## (b) Does promoting now satisfy CLAUDE.md's "two real modules" rule?
 
@@ -112,10 +128,21 @@ This matters for the promotion question specifically because:
   (`fastembed.TextEmbedding(...).embed(documents)`) — a caller composing
   `fastembed` would not touch `dscraft.clean.embeddings.EmbeddingModel` at
   all; they'd depend on the `fastembed` package directly. If `agent` instead
-  picks `sentence-transformers` (also cited), that's a PyTorch-based path
-  fundamentally incompatible with `clean`'s hard PyTorch-free constraint,
-  meaning `agent` couldn't reuse a promoted-from-`clean` helper at all in
-  that case.
+  picks `sentence-transformers` (also cited), that specific choice would
+  **not by itself establish a shared interface** with `clean`'s embeddings:
+  `sentence-transformers` is PyTorch-based, a different backend and a
+  different loading mechanism than `clean`'s ONNX-Runtime-only
+  `EmbeddingModel`, so `agent` couldn't reuse a promoted-from-`clean` helper
+  *if it went that route*. That is a statement about one specific backend
+  choice, not a categorical claim that `agent` and `clean` can never share
+  embeddings infrastructure — `agent` could just as plausibly land on its
+  own separate ONNX-backed implementation (e.g. via `fastembed`'s ONNX
+  internals, or a bespoke `onnxruntime.InferenceSession` wrapper of its
+  own) that *would* share `EmbeddingModel`'s shape, if that turns out to be
+  the better fit for its RAG pipeline. Which of these `agent` actually picks
+  is exactly the unresolved, code-not-yet-written question this evaluation
+  cannot answer — "not automatically compatible" is the accurate framing,
+  not "impossible."
 - A "concrete filed issue that says it will need embeddings" is not the
   same claim as "a concrete, landed piece of code with a specific,
   demonstrated interface requirement." CLAUDE.md's rule exists specifically
@@ -157,11 +184,13 @@ actually calls an embeddings backend. At that point:
 2. **If the shapes genuinely converge** (e.g. `agent` also settles on a
    bare ONNX Runtime session + pluggable preprocessor, PyTorch-free, for at
    least one of its backend options): promote at that point. The concrete,
-   scoped move would be:
-   - Move `EmbeddingModel`, `PreprocessorOutput`,
-     `hashing_bag_of_words_vectorizer`, `build_synthetic_embedding_onnx`,
-     and `build_synthetic_embedding_model` to a new
-     `packages/dscraft/src/dscraft/core/embeddings.py`.
+   scoped move would be — narrower than "the whole file," per the (a)
+   section above:
+   - Move only `EmbeddingModel`, `PreprocessorOutput`, and
+     `hashing_bag_of_words_vectorizer` to a new
+     `packages/dscraft/src/dscraft/core/embeddings.py`. These are the
+     generic runtime embedding *infrastructure*; nothing else in the file
+     qualifies.
    - Leave `MODEL_ALLOWLIST`, `RECOMMENDED_MODEL_NAME`,
      `_RECOMMENDED_MODEL_REVISION`, `_RECOMMENDED_MODEL_ONNX_URL`, and
      `download_recommended_model()` in `dscraft/clean/embeddings.py` — these
@@ -169,23 +198,37 @@ actually calls an embeddings backend. At that point:
      define its own `Allowlist`/recommended-checkpoint entry alongside its
      own recommended model, per `dscraft.core.licensing`'s existing
      per-module-ownership pattern.
+   - Also leave `build_synthetic_embedding_onnx()` and
+     `build_synthetic_embedding_model()` in `dscraft/clean/embeddings.py`
+     (or move them into `clean`'s own `tests/`/`examples/` tree) — these are
+     `clean`-specific test/example fixtures, not infrastructure other
+     modules need, and should not follow `EmbeddingModel` into `core` even
+     if the promotion happens. A future `agent` promotion candidate would
+     bring its own hermetic test/example fixtures the same way, not reuse
+     `clean`'s synthetic ONNX graph builder.
    - `dscraft/clean/embeddings.py` becomes a thin re-export
      (`from dscraft.core.embeddings import EmbeddingModel, ...`) so
      `dscraft.clean.embeddings.EmbeddingModel` keeps working for existing
-     callers/tests without a breaking import-path change.
+     callers/tests without a breaking import-path change, while
+     `build_synthetic_embedding_onnx`/`build_synthetic_embedding_model`
+     remain defined directly in `clean` (they are not re-exports of
+     anything in `core`).
    - `dscraft.core`'s `<extra>` situation: the promoted module still needs
-     `onnxruntime`/`onnx`/`numpy` to *import*, since `EmbeddingModel` and
-     `build_synthetic_embedding_onnx` reference them at module level, not
-     lazily. Under this package's "core stays thin, near-zero deps"
-     contract (`dscraft.core`'s only unconditional dependency today is
-     `opentelemetry-api`), that would force `onnxruntime`+`onnx`+`numpy`
-     onto every `dscraft.core` import unless the promoted module is instead
+     `onnxruntime`/`numpy` to *import*, since `EmbeddingModel` references
+     them at module level, not lazily. (The `onnx` package's graph-builder
+     API, used only by `build_synthetic_embedding_onnx`, stays a `clean`-only
+     import under this narrower scope — it would not need to become a
+     `dscraft.core` dependency at all.) Under this package's "core stays
+     thin, near-zero deps" contract (`dscraft.core`'s only unconditional
+     dependency today is `opentelemetry-api`), that would still force
+     `onnxruntime`+`numpy` onto every `dscraft.core` import unless the
+     promoted module is instead
      gated behind a new `core`-scoped extra (e.g. `dscraft[core-embeddings]`)
      with lazy internal imports, mirroring how `automl-onnx` is already
      split out from `automl`'s base extra specifically to avoid forcing the
      ONNX stack onto every `automl` install. **This dependency-footprint
      problem is itself a second, independent reason to wait**: promoting
-     today would either (i) silently add onnxruntime/onnx/numpy as new
+     today would either (i) silently add onnxruntime+numpy as new
      unconditional `dscraft.core` runtime dependencies — directly
      contradicting CLAUDE.md's "`dscraft.core` stays thin" rule — or (ii)
      require inventing a new core-scoped extra/lazy-import convention that
