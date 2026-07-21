@@ -1,11 +1,12 @@
 """dscraft.forecast -- LazyForecast scaffold: classical statistical forecasting.
 
-Public API surface for the one signature capability implemented at this
-scaffold depth (architecture doc Part 3, "Module 3: LazyForecast"): fit
-Nixtla's ``statsforecast`` classical models (``AutoARIMA``/``AutoETS``) over
-a Tier-1 Arrow-backed pandas or Polars input, produce a horizon forecast,
-and score it with a basic backtest/evaluation report (per-series and
-averaged MAE/RMSE).
+Public API surface for the classical-statistical-forecasting branch of
+LazyForecast (architecture doc Part 3, "Module 3: LazyForecast"): fit any
+of Nixtla's ``statsforecast`` classical models (see ``SUPPORTED_MODELS`` --
+autoregressive/exponential-smoothing autofits, simple baselines, and the
+Croston intermittent-demand family) over a Tier-1 Arrow-backed pandas or
+Polars input, produce a horizon forecast, and score it with a basic
+backtest/evaluation report (per-series and averaged MAE/RMSE).
 
 Everything else described for LazyForecast in the architecture doc -- the
 tree-based ML branch (MLForecast/LightGBM/XGBoost), the zero-shot Time
