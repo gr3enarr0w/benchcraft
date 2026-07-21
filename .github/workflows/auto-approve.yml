@@ -31,7 +31,26 @@ name: Auto-approve
 #                                     and cannot trigger downstream
 #                                     required-check runs on the resulting
 #                                     merge commit the way a distinct App
-#                                     identity can.
+#                                     identity can. The App must also be
+#                                     granted "Administration: Read"
+#                                     repository permission: reading
+#                                     branch protection's required status
+#                                     check list (GET
+#                                     /repos/{owner}/{repo}/branches/{branch}/protection)
+#                                     requires that permission per GitHub's
+#                                     REST API docs, and it is *not*
+#                                     grantable to GITHUB_TOKEN -- there is
+#                                     no "administration" key in a
+#                                     workflow's `permissions:` block (see
+#                                     the full enumerated list in "Workflow
+#                                     syntax for GitHub Actions"). That is
+#                                     why the two steps below that read
+#                                     branch protection use the App
+#                                     installation token instead of
+#                                     `github.token`, and why that token is
+#                                     minted before those steps rather than
+#                                     only just before the approve/merge
+#                                     steps.
 #     - AUTO_APPROVE_APP_PRIVATE_KEY  Private key (PEM) for that App.
 #     - OLLAMA_API_KEY                API key for an Ollama Cloud account.
 #     - OLLAMA_BASE_URL               Base URL for the Ollama Cloud
@@ -56,6 +75,19 @@ on:
     types: [opened, synchronize, reopened]
     branches: [main]
 
+# NOTE: branch protection's required-status-check list can only be read by
+# a caller with repository "Administration: Read" access (per GitHub's
+# REST API docs for "Get branch protection"). "administration" is not a
+# valid key in this `permissions:` block -- the full set of scopes
+# GITHUB_TOKEN can ever hold is enumerated in GitHub's "Workflow syntax
+# for GitHub Actions" docs, and administration is not among them, by
+# design (it is deliberately excluded from the ephemeral Actions token).
+# So this block intentionally does NOT list `administration: read`; it
+# would either be rejected as an unrecognized key or silently do nothing.
+# The steps that need to read branch protection use the GitHub App
+# installation token (minted early in the job) instead of github.token,
+# since GitHub Apps -- unlike GITHUB_TOKEN -- can be granted
+# Administration permission.
 permissions:
   contents: write
   pull-requests: write
@@ -80,10 +112,23 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
+      # Minted here, before the first branch-protection read, rather than
+      # just before the approve/merge steps: reading branch protection's
+      # required-status-check list requires "Administration: Read", which
+      # only a GitHub App/PAT can hold -- GITHUB_TOKEN cannot, so both
+      # "Poll required status checks to green" and "Re-poll checks after
+      # branch update" below need this token too, not just github.token.
+      - name: Mint GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.AUTO_APPROVE_APP_ID }}
+          private-key: ${{ secrets.AUTO_APPROVE_APP_PRIVATE_KEY }}
+
       - name: Poll required status checks to green
         id: poll-checks
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -318,17 +363,9 @@ jobs:
           #
           #   print(f"ALIGNED: {reasoning}")
 
-          echo "aW1wb3J0IGpzb24KaW1wb3J0IG9zCmltcG9ydCBzeXMKaW1wb3J0IHVybGxpYi5lcnJvcgppbXBvcnQgdXJsbGliLnJlcXVlc3QKCgpkZWYgZmFpbF9jbG9zZWQocmVhc29uaW5nKToKICAgIHdpdGggb3Blbihvcy5lbnZpcm9uWyJHSVRIVUJfT1VUUFVUIl0sICJhIikgYXMgZjoKICAgICAgICBmLndyaXRlKCJhbGlnbmVkPWZhbHNlXG4iKQogICAgICAgIGYud3JpdGUoInJlYXNvbmluZzw8RU9GXG4iKQogICAgICAgIGYud3JpdGUocmVhc29uaW5nICsgIlxuIikKICAgICAgICBmLndyaXRlKCJFT0ZcbiIpCiAgICBwcmludChmIk5PVCBBTElHTkVEIChmYWlsLWNsb3NlZCk6IHtyZWFzb25pbmd9IikKICAgIHN5cy5leGl0KDApCgoKYmFzZV91cmwgPSBvcy5lbnZpcm9uLmdldCgiT0xMQU1BX0JBU0VfVVJMIiwgIiIpLnJzdHJpcCgiLyIpCmFwaV9rZXkgPSBvcy5lbnZpcm9uLmdldCgiT0xMQU1BX0FQSV9LRVkiLCAiIikKbW9kZWwgPSBvcy5lbnZpcm9uLmdldCgiT0xMQU1BX01PREVMIiwgIiIpCgppZiBub3QgYmFzZV91cmwgb3Igbm90IGFwaV9rZXkgb3Igbm90IG1vZGVsOgogICAgZmFpbF9jbG9zZWQoCiAgICAgICAgIk9MTEFNQV9CQVNFX1VSTCwgT0xMQU1BX0FQSV9LRVksIG9yIE9MTEFNQV9NT0RFTCBpcyBub3QgIgogICAgICAgICJjb25maWd1cmVkIGZvciB0aGlzIHJlcG8sIHNvIG5vIGRlc2lnbi1hbGlnbm1lbnQgY2hlY2sgIgogICAgICAgICJjb3VsZCBiZSBwZXJmb3JtZWQuIgogICAgKQoKdHJ5OgogICAgd2l0aCBvcGVuKCJDTEFVREUubWQiLCAiciIpIGFzIGY6CiAgICAgICAgY2xhdWRlX21kID0gZi5yZWFkKCkKZXhjZXB0IE9TRXJyb3IgYXMgZXhjOgogICAgZmFpbF9jbG9zZWQoZiJDb3VsZCBub3QgcmVhZCBDTEFVREUubWQgYXQgdGhlIFBSIGhlYWQgY29tbWl0OiB7ZXhjfSIpCgp0cnk6CiAgICB3aXRoIG9wZW4oIi90bXAvcHIuZGlmZiIsICJyIikgYXMgZjoKICAgICAgICBwcl9kaWZmID0gZi5yZWFkKCkKZXhjZXB0IE9TRXJyb3IgYXMgZXhjOgogICAgZmFpbF9jbG9zZWQoZiJDb3VsZCBub3QgcmVhZCB0aGUgUFIgZGlmZjoge2V4Y30iKQoKc3lzdGVtX3Byb21wdCA9ICgKICAgICJZb3UgYXJlIHJldmlld2luZyBhIHB1bGwgcmVxdWVzdCdzIGRpZmYgYWdhaW5zdCBhIHByb2plY3QncyAiCiAgICAibG9ja2VkLCBub24tbmVnb3RpYWJsZSBhcmNoaXRlY3R1cmUgY29uc3RyYWludHMuIFRoZSBmdWxsICIKICAgICJjb250ZW50cyBvZiB0aGUgcHJvamVjdCdzIENMQVVERS5tZCBnb3Zlcm5hbmNlIGRvY3VtZW50IGFyZSAiCiAgICAiYmVsb3cgLS0gdHJlYXQgZXZlcnl0aGluZyBpbiBpdCwgZXNwZWNpYWxseSB0aGUgc2VjdGlvbnMgIgogICAgIidDb3JlIHNjb3BlIGNvbnN0cmFpbnRzJywgJ1NoYXJlZCBhcmNoaXRlY3R1cmUgKExhenlDb3JlKScsICIKICAgICInTGljZW5zaW5nIHBvbGljeSAoTGF6eUlzb2xhdGUpJywgYW5kICdXb3JraW5nIGFzIGEgIgogICAgImxpYnJhcnksIG5vdCBhIHBpbGUgb2Ygc2NyaXB0cycsIGFzIHNldHRsZWQgYW5kICIKICAgICJub24tbmVnb3RpYWJsZS5cblxuIgogICAgIj09PSBDTEFVREUubWQgPT09XG4iCiAgICBmIntjbGF1ZGVfbWR9XG4iCiAgICAiPT09IGVuZCBDTEFVREUubWQgPT09XG5cbiIKICAgICJJZGVudGlmeSBhbnkgdmlvbGF0aW9uIG9mIHRoZXNlIGNvbnN0cmFpbnRzIGludHJvZHVjZWQgYnkgIgogICAgInRoZSBkaWZmIHlvdSB3aWxsIGJlIGdpdmVuLCBmb3IgZXhhbXBsZSAobm9uLWV4aGF1c3RpdmUpOiAiCiAgICAiYSBuZXcgc2hhcmVkIExMTS1yb3V0ZXIvbXVsdGktcHJvdmlkZXIgYWJzdHJhY3Rpb24gYWRkZWQgIgogICAgIndoZW4gQ0xBVURFLm1kIGV4cGxpY2l0bHkgZm9yYmlkcyBvbmU7IGEgR1BML0FHUEwgIgogICAgImRlcGVuZGVuY3kgYWRkZWQgd2l0aG91dCB0aGUgZG9jdW1lbnRlZCBpc29sYXRpb24gcGF0dGVybiAiCiAgICAiKHN1YnByb2Nlc3MvSVBDIGZvciBsb2NhbCBydW50aW1lIHVzZSwgZnVsbCByZXBsYWNlbWVudCBpZiAiCiAgICAiaXQgd291bGQgYmUgdGhlIG5ldHdvcmstZmFjaW5nIHNlcnZpY2UpOyBhIG5ldyAiCiAgICAic3VicGFja2FnZS10by1zdWJwYWNrYWdlIGltcG9ydCBpbnRyb2R1Y2VkIHdoZW4gdGhlICIKICAgICJtb2R1bGUgZGVwZW5kZW5jeSBncmFwaCBzYXlzIHN1YnBhY2thZ2VzIHN0YXkgIgogICAgImluZGVwZW5kZW50OyBub24tTUlUIGNvZGUgYWRkZWQgdG8gcGxhdGZvcm0gY29kZTsgYSBuZXcgIgogICAgInN0YW5kYWxvbmUgc2NyaXB0IGFkZGVkIG91dHNpZGUgdGhlIGluc3RhbGxhYmxlIHBhY2thZ2UgIgogICAgInN0cnVjdHVyZSBpbnN0ZWFkIG9mIGJlaGluZCBhIHJlYWwgZnVuY3Rpb24vY2xhc3MgQVBJOyAiCiAgICAiZHVwbGljYXRlZCBsb2dpYyBuZXh0IHRvIGFuIGV4aXN0aW5nIGltcGxlbWVudGF0aW9uIG9mICIKICAgICJ0aGUgc2FtZSBjYXBhYmlsaXR5IGluc3RlYWQgb2YgZXh0ZW5kaW5nIGl0IGluIHBsYWNlLlxuXG4iCiAgICAiUmVzcG9uZCB3aXRoIGV4YWN0bHkgb25lIEpTT04gb2JqZWN0IGFuZCBub3RoaW5nIGVsc2UsIG5vICIKICAgICJtYXJrZG93biBjb2RlIGZlbmNlcywgbm8gcHJlYW1ibGUsIG5vIHRyYWlsaW5nIHRleHQ6ICIKICAgICd7ImFsaWduZWQiOiB0cnVlIG9yIGZhbHNlLCAicmVhc29uaW5nIjogIjEtMyBzZW50ZW5jZXMifScKKQoKdXNlcl9wcm9tcHQgPSAiSGVyZSBpcyB0aGUgUFIgZGlmZiB0byByZXZpZXc6XG5cbiIgZiJ7cHJfZGlmZn0iCgpwYXlsb2FkID0ganNvbi5kdW1wcygKICAgIHsKICAgICAgICAibW9kZWwiOiBtb2RlbCwKICAgICAgICAibWVzc2FnZXMiOiBbCiAgICAgICAgICAgIHsicm9sZSI6ICJzeXN0ZW0iLCAiY29udGVudCI6IHN5c3RlbV9wcm9tcHR9LAogICAgICAgICAgICB7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogdXNlcl9wcm9tcHR9LAogICAgICAgIF0sCiAgICAgICAgInN0cmVhbSI6IEZhbHNlLAogICAgfQopLmVuY29kZSgidXRmLTgiKQoKcmVxID0gdXJsbGliLnJlcXVlc3QuUmVxdWVzdCgKICAgIGYie2Jhc2VfdXJsfS92MS9jaGF0L2NvbXBsZXRpb25zIiwKICAgIGRhdGE9cGF5bG9hZCwKICAgIG1ldGhvZD0iUE9TVCIsCiAgICBoZWFkZXJzPXsKICAgICAgICAiQXV0aG9yaXphdGlvbiI6IGYiQmVhcmVyIHthcGlfa2V5fSIsCiAgICAgICAgIkNvbnRlbnQtVHlwZSI6ICJhcHBsaWNhdGlvbi9qc29uIiwKICAgIH0sCikKCnRyeToKICAgIHdpdGggdXJsbGliLnJlcXVlc3QudXJsb3BlbihyZXEsIHRpbWVvdXQ9MTIwKSBhcyByZXNwOgogICAgICAgIGJvZHkgPSBqc29uLmxvYWRzKHJlc3AucmVhZCgpLmRlY29kZSgidXRmLTgiKSkKZXhjZXB0ICh1cmxsaWIuZXJyb3IuVVJMRXJyb3IsIHVybGxpYi5lcnJvci5IVFRQRXJyb3IsIFRpbWVvdXRFcnJvciwgT1NFcnJvcikgYXMgZXhjOgogICAgZmFpbF9jbG9zZWQoZiJUaGUgT2xsYW1hIENsb3VkIHJlcXVlc3QgZmFpbGVkIG9yIHRpbWVkIG91dDoge2V4Y30iKQpleGNlcHQganNvbi5KU09ORGVjb2RlRXJyb3IgYXMgZXhjOgogICAgZmFpbF9jbG9zZWQoZiJUaGUgT2xsYW1hIENsb3VkIHJlc3BvbnNlIHdhcyBub3QgdmFsaWQgSlNPTjoge2V4Y30iKQoKdHJ5OgogICAgY29udGVudCA9IGJvZHlbImNob2ljZXMiXVswXVsibWVzc2FnZSJdWyJjb250ZW50Il0KZXhjZXB0IChLZXlFcnJvciwgSW5kZXhFcnJvciwgVHlwZUVycm9yKSBhcyBleGM6CiAgICBmYWlsX2Nsb3NlZChmIlRoZSBPbGxhbWEgQ2xvdWQgcmVzcG9uc2UgZGlkIG5vdCBoYXZlIHRoZSBleHBlY3RlZCBzaGFwZToge2V4Y30iKQoKdHJ5OgogICAgdmVyZGljdCA9IGpzb24ubG9hZHMoY29udGVudCkKZXhjZXB0IGpzb24uSlNPTkRlY29kZUVycm9yIGFzIGV4YzoKICAgIGZhaWxfY2xvc2VkKGYiVGhlIG1vZGVsJ3MgcmVzcG9uc2UgYm9keSB3YXMgbm90IHBhcnNlYWJsZSBKU09OOiB7ZXhjfSIpCgppZiBub3QgaXNpbnN0YW5jZSh2ZXJkaWN0LCBkaWN0KSBvciB2ZXJkaWN0LmdldCgiYWxpZ25lZCIpIGlzIG5vdCBUcnVlOgogICAgcmVhc29uaW5nID0gdmVyZGljdC5nZXQoInJlYXNvbmluZyIpIGlmIGlzaW5zdGFuY2UodmVyZGljdCwgZGljdCkgZWxzZSBOb25lCiAgICBmYWlsX2Nsb3NlZCgKICAgICAgICByZWFzb25pbmcKICAgICAgICBvciAiVGhlIG1vZGVsIGp1ZGdlZCB0aGUgZGlmZiBub3QgYWxpZ25lZCB3aXRoIENMQVVERS5tZCwgIgogICAgICAgICJvciByZXR1cm5lZCBhbiB1bmV4cGVjdGVkL2FtYmlndW91cyB2ZXJkaWN0LiIKICAgICkKCnJlYXNvbmluZyA9IHZlcmRpY3QuZ2V0KCJyZWFzb25pbmciLCAiTm8gcmVhc29uaW5nIHByb3ZpZGVkLiIpCgp3aXRoIG9wZW4ob3MuZW52aXJvblsiR0lUSFVCX09VVFBVVCJdLCAiYSIpIGFzIGY6CiAgICBmLndyaXRlKCJhbGlnbmVkPXRydWVcbiIpCiAgICBmLndyaXRlKCJyZWFzb25pbmc8PEVPRlxuIikKICAgIGYud3JpdGUoc3RyKHJlYXNvbmluZykgKyAiXG4iKQogICAgZi53cml0ZSgiRU9GXG4iKQoKcHJpbnQoZiJBTElHTkVEOiB7cmVhc29uaW5nfSIpCg==" | base64 -d > /tmp/alignment_check.py
+          echo "aW1wb3J0IGpzb24KaW1wb3J0IG9zCmltcG9ydCBzeXMKaW1wb3J0IHVybGxpYi5lcnJvcgppbXBvcnQgdXJsbGliLnJlcXVlc3QKCmRlZiBmYWlsX2Nsb3NlZChyZWFzb25pbmcpOgogICAgd2l0aCBvcGVuKG9zLmVudmlyb25bIkdJVEhVQl9PVVRQVVQiXSwgImEiKSBhcyBmOgogICAgICAgIGYud3JpdGUoImFsaWduZWQ9ZmFsc2VcbiIpCiAgICAgICAgZi53cml0ZSgicmVhc29uaW5nPDxFT0ZcbiIpCiAgICAgICAgZi53cml0ZShyZWFzb25pbmcgKyAiXG4iKQogICAgICAgIGYud3JpdGUoIkVPRlxuIikKICAgIHByaW50KGYiTk9UIEFMSUdORUQgKGZhaWwtY2xvc2VkKToge3JlYXNvbmluZ30iKQogICAgc3lzLmV4aXQoMCkKCmJhc2VfdXJsID0gb3MuZW52aXJvbi5nZXQoIk9MTEFNQV9CQVNFX1VSTCIsICIiKS5yc3RyaXAoIi8iKQphcGlfa2V5ID0gb3MuZW52aXJvbi5nZXQoIk9MTEFNQV9BUElfS0VZIiwgIiIpCm1vZGVsID0gb3MuZW52aXJvbi5nZXQoIk9MTEFNQV9NT0RFTCIsICIiKQoKaWYgbm90IGJhc2VfdXJsIG9yIG5vdCBhcGlfa2V5IG9yIG5vdCBtb2RlbDoKICAgIGZhaWxfY2xvc2VkKAogICAgICAgICJPTExBTUFfQkFTRV9VUkwsIE9MTEFNQV9BUElfS0VZLCBvciBPTExBTUFfTU9ERUwgaXMgbm90ICIKICAgICAgICAiY29uZmlndXJlZCBmb3IgdGhpcyByZXBvLCBzbyBubyBkZXNpZ24tYWxpZ25tZW50IGNoZWNrICIKICAgICAgICAiY291bGQgYmUgcGVyZm9ybWVkLiIKICAgICkKCnRyeToKICAgIHdpdGggb3BlbigiQ0xBVURFLm1kIiwgInIiKSBhcyBmOgogICAgICAgIGNsYXVkZV9tZCA9IGYucmVhZCgpCmV4Y2VwdCBPU0Vycm9yIGFzIGV4YzoKICAgIGZhaWxfY2xvc2VkKGYiQ291bGQgbm90IHJlYWQgQ0xBVURFLm1kIGF0IHRoZSBQUiBoZWFkIGNvbW1pdDoge2V4Y30iKQoKdHJ5OgogICAgd2l0aCBvcGVuKCIvdG1wL3ByLmRpZmYiLCAiciIpIGFzIGY6CiAgICAgICAgcHJfZGlmZiA9IGYucmVhZCgpCmV4Y2VwdCBPU0Vycm9yIGFzIGV4YzoKICAgIGZhaWxfY2xvc2VkKGYiQ291bGQgbm90IHJlYWQgdGhlIFBSIGRpZmY6IHtleGN9IikKCnN5c3RlbV9wcm9tcHQgPSAoCiAgICAiWW91IGFyZSByZXZpZXdpbmcgYSBwdWxsIHJlcXVlc3QncyBkaWZmIGFnYWluc3QgYSBwcm9qZWN0J3MgIgogICAgImxvY2tlZCwgbm9uLW5lZ290aWFibGUgYXJjaGl0ZWN0dXJlIGNvbnN0cmFpbnRzLiBUaGUgZnVsbCAiCiAgICAiY29udGVudHMgb2YgdGhlIHByb2plY3QncyBDTEFVREUubWQgZ292ZXJuYW5jZSBkb2N1bWVudCBhcmUgIgogICAgImJlbG93IC0tIHRyZWF0IGV2ZXJ5dGhpbmcgaW4gaXQsIGVzcGVjaWFsbHkgdGhlIHNlY3Rpb25zICIKICAgICInQ29yZSBzY29wZSBjb25zdHJhaW50cycsICdTaGFyZWQgYXJjaGl0ZWN0dXJlIChMYXp5Q29yZSknLCAiCiAgICAiJ0xpY2Vuc2luZyBwb2xpY3kgKExhenlJc29sYXRlKScsIGFuZCAnV29ya2luZyBhcyBhICIKICAgICJsaWJyYXJ5LCBub3QgYSBwaWxlIG9mIHNjcmlwdHMnLCBhcyBzZXR0bGVkIGFuZCAiCiAgICAibm9uLW5lZ290aWFibGUuXG5cbiIKICAgICI9PT0gQ0xBVURFLm1kID09PVxuIgogICAgZiJ7Y2xhdWRlX21kfVxuIgogICAgIj09PSBlbmQgQ0xBVURFLm1kID09PVxuXG4iCiAgICAiSWRlbnRpZnkgYW55IHZpb2xhdGlvbiBvZiB0aGVzZSBjb25zdHJhaW50cyBpbnRyb2R1Y2VkIGJ5ICIKICAgICJ0aGUgZGlmZiB5b3Ugd2lsbCBiZSBnaXZlbiwgZm9yIGV4YW1wbGUgKG5vbi1leGhhdXN0aXZlKTogIgogICAgImEgbmV3IHNoYXJlZCBMTE0tcm91dGVyL211bHRpLXByb3ZpZGVyIGFic3RyYWN0aW9uIGFkZGVkICIKICAgICJ3aGVuIENMQVVERS5tZCBleHBsaWNpdGx5IGZvcmJpZHMgb25lOyBhIEdQTC9BR1BMICIKICAgICJkZXBlbmRlbmN5IGFkZGVkIHdpdGhvdXQgdGhlIGRvY3VtZW50ZWQgaXNvbGF0aW9uIHBhdHRlcm4gIgogICAgIihzdWJwcm9jZXNzL0lQQyBmb3IgbG9jYWwgcnVudGltZSB1c2UsIGZ1bGwgcmVwbGFjZW1lbnQgaWYgIgogICAgIml0IHdvdWxkIGJlIHRoZSBuZXR3b3JrLWZhY2luZyBzZXJ2aWNlKTsgYSBuZXcgIgogICAgInN1YnBhY2thZ2UtdG8tc3VicGFja2FnZSBpbXBvcnQgaW50cm9kdWNlZCB3aGVuIHRoZSAiCiAgICAibW9kdWxlIGRlcGVuZGVuY3kgZ3JhcGggc2F5cyBzdWJwYWNrYWdlcyBzdGF5ICIKICAgICJpbmRlcGVuZGVudDsgbm9uLU1JVCBjb2RlIGFkZGVkIHRvIHBsYXRmb3JtIGNvZGU7IGEgbmV3ICIKICAgICJzdGFuZGFsb25lIHNjcmlwdCBhZGRlZCBvdXRzaWRlIHRoZSBpbnN0YWxsYWJsZSBwYWNrYWdlICIKICAgICJzdHJ1Y3R1cmUgaW5zdGVhZCBvZiBiZWhpbmQgYSByZWFsIGZ1bmN0aW9uL2NsYXNzIEFQSTsgIgogICAgImR1cGxpY2F0ZWQgbG9naWMgbmV4dCB0byBhbiBleGlzdGluZyBpbXBsZW1lbnRhdGlvbiBvZiAiCiAgICAidGhlIHNhbWUgY2FwYWJpbGl0eSBpbnN0ZWFkIG9mIGV4dGVuZGluZyBpdCBpbiBwbGFjZS5cblxuIgogICAgIlJlc3BvbmQgd2l0aCBleGFjdGx5IG9uZSBKU09OIG9iamVjdCBhbmQgbm90aGluZyBlbHNlLCBubyAiCiAgICAibWFya2Rvd24gY29kZSBmZW5jZXMsIG5vIHByZWFtYmxlLCBubyB0cmFpbGluZyB0ZXh0OiAiCiAgICAneyJhbGlnbmVkIjogdHJ1ZSBvciBmYWxzZSwgInJlYXNvbmluZyI6ICIxLTMgc2VudGVuY2VzIn0nCikKCnVzZXJfcHJvbXB0ID0gIkhlcmUgaXMgdGhlIFBSIGRpZmYgdG8gcmV2aWV3OlxuXG4iIGYie3ByX2RpZmZ9IgoKcGF5bG9hZCA9IGpzb24uZHVtcHMoCiAgICB7CiAgICAgICAgIm1vZGVsIjogbW9kZWwsCiAgICAgICAgIm1lc3NhZ2VzIjogWwogICAgICAgICAgICB7InJvbGUiOiAic3lzdGVtIiwgImNvbnRlbnQiOiBzeXN0ZW1fcHJvbXB0fSwKICAgICAgICAgICAgeyJyb2xlIjogInVzZXIiLCAiY29udGVudCI6IHVzZXJfcHJvbXB0fSwKICAgICAgICBdLAogICAgICAgICJzdHJlYW0iOiBGYWxzZSwKICAgIH0KKS5lbmNvZGUoInV0Zi04IikKCnJlcSA9IHVybGxpYi5yZXF1ZXN0LlJlcXVlc3QoCiAgICBmIntiYXNlX3VybH0vdjEvY2hhdC9jb21wbGV0aW9ucyIsCiAgICBkYXRhPXBheWxvYWQsCiAgICBtZXRob2Q9IlBPU1QiLAogICAgaGVhZGVycz17CiAgICAgICAgIkF1dGhvcml6YXRpb24iOiBmIkJlYXJlciB7YXBpX2tleX0iLAogICAgICAgICJDb250ZW50LVR5cGUiOiAiYXBwbGljYXRpb24vanNvbiIsCiAgICB9LAopCgp0cnk6CiAgICB3aXRoIHVybGxpYi5yZXF1ZXN0LnVybG9wZW4ocmVxLCB0aW1lb3V0PTEyMCkgYXMgcmVzcDoKICAgICAgICBib2R5ID0ganNvbi5sb2FkcyhyZXNwLnJlYWQoKS5kZWNvZGUoInV0Zi04IikpCmV4Y2VwdCAodXJsbGliLmVycm9yLlVSTEVycm9yLCB1cmxsaWIuZXJyb3IuSFRUUEVycm9yLCBUaW1lb3V0RXJyb3IsIE9TRXJyb3IpIGFzIGV4YzoKICAgIGZhaWxfY2xvc2VkKGYiVGhlIE9sbGFtYSBDbG91ZCByZXF1ZXN0IGZhaWxlZCBvciB0aW1lZCBvdXQ6IHtleGN9IikKZXhjZXB0IGpzb24uSlNPTkRlY29kZUVycm9yIGFzIGV4YzoKICAgIGZhaWxfY2xvc2VkKGYiVGhlIE9sbGFtYSBDbG91ZCByZXNwb25zZSB3YXMgbm90IHZhbGlkIEpTT046IHtleGN9IikKCnRyeToKICAgIGNvbnRlbnQgPSBib2R5WyJjaG9pY2VzIl1bMF1bIm1lc3NhZ2UiXVsiY29udGVudCJdCmV4Y2VwdCAoS2V5RXJyb3IsIEluZGV4RXJyb3IsIFR5cGVFcnJvcikgYXMgZXhjOgogICAgZmFpbF9jbG9zZWQoZiJUaGUgT2xsYW1hIENsb3VkIHJlc3BvbnNlIGRpZCBub3QgaGF2ZSB0aGUgZXhwZWN0ZWQgc2hhcGU6IHtleGN9IikKCnRyeToKICAgIHZlcmRpY3QgPSBqc29uLmxvYWRzKGNvbnRlbnQpCmV4Y2VwdCBqc29uLkpTT05EZWNvZGVFcnJvciBhcyBleGM6CiAgICBmYWlsX2Nsb3NlZChmIlRoZSBtb2RlbCdzIHJlc3BvbnNlIGJvZHkgd2FzIG5vdCBwYXJzZWFibGUgSlNPTjoge2V4Y30iKQoKaWYgbm90IGlzaW5zdGFuY2UodmVyZGljdCwgZGljdCkgb3IgdmVyZGljdC5nZXQoImFsaWduZWQiKSBpcyBub3QgVHJ1ZToKICAgIHJlYXNvbmluZyA9IHZlcmRpY3QuZ2V0KCJyZWFzb25pbmciKSBpZiBpc2luc3RhbmNlKHZlcmRpY3QsIGRpY3QpIGVsc2UgTm9uZQogICAgZmFpbF9jbG9zZWQoCiAgICAgICAgcmVhc29uaW5nCiAgICAgICAgb3IgIlRoZSBtb2RlbCBqdWRnZWQgdGhlIGRpZmYgbm90IGFsaWduZWQgd2l0aCBDTEFVREUubWQsICIKICAgICAgICAib3IgcmV0dXJuZWQgYW4gdW5leHBlY3RlZC9hbWJpZ3VvdXMgdmVyZGljdC4iCiAgICApCgpyZWFzb25pbmcgPSB2ZXJkaWN0LmdldCgicmVhc29uaW5nIiwgIk5vIHJlYXNvbmluZyBwcm92aWRlZC4iKQoKd2l0aCBvcGVuKG9zLmVudmlyb25bIkdJVEhVQl9PVVRQVVQiXSwgImEiKSBhcyBmOgogICAgZi53cml0ZSgiYWxpZ25lZD10cnVlXG4iKQogICAgZi53cml0ZSgicmVhc29uaW5nPDxFT0ZcbiIpCiAgICBmLndyaXRlKHN0cihyZWFzb25pbmcpICsgIlxuIikKICAgIGYud3JpdGUoIkVPRlxuIikKCnByaW50KGYiQUxJR05FRDoge3JlYXNvbmluZ30iKQo=" | base64 -d > /tmp/alignment_check.py
 
           python3 /tmp/alignment_check.py
-
-      - name: Mint GitHub App installation token
-        id: app-token
-        if: steps.poll-checks.outputs.checks_green == 'true' && steps.alignment.outputs.aligned == 'true'
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.AUTO_APPROVE_APP_ID }}
-          private-key: ${{ secrets.AUTO_APPROVE_APP_PRIVATE_KEY }}
 
       - name: Approve PR
         if: steps.poll-checks.outputs.checks_green == 'true' && steps.alignment.outputs.aligned == 'true'
@@ -369,7 +406,7 @@ jobs:
       - name: Re-poll checks after branch update
         if: steps.poll-checks.outputs.checks_green == 'true' && steps.alignment.outputs.aligned == 'true' && steps.update-branch.outputs.updated == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
