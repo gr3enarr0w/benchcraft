@@ -323,25 +323,28 @@ Revisit this decision when **all** of the following are true:
   metric-naming convention. This requirement does not loosen just because
   the two-subpackage bar above is met.
 
-At that point, the scoped implementation plan is:
-
-- Add a **new, own extra** (e.g. `dscraft[tracking]`), never a base
-  dependency of `core` or any subpackage extra, per the issue's own
-  constraint ("must not become a base-install dependency of any
-  subpackage").
-- Implement it as `dscraft.core.tracking` (or similar), built as an
-  **OTel span-processor/exporter layered on top of the existing
-  `dscraft.core.telemetry` schema** (per part (c)) — not a parallel
-  metric-naming convention — with `mlflow`/`wandb` as selectable backend
-  implementations behind one small interface (per CLAUDE.md's multi-
-  backend principle: "expose competing frameworks as selectable options,
-  never pick-one-over-another").
-- Default to MLflow's local file-store backend for any example/test code
-  (zero caveats, per part (b)); if W&B's offline mode is exercised in
-  tests, re-verify against the exact pinned `wandb` version that offline
-  mode doesn't attempt outbound connections (per part (b)'s `wandb#2701`
-  finding), ideally inside `dscraft.core.sandbox`'s existing network-denied
-  execution mode.
+At that point, don't treat this document as having pre-decided the
+outcome — the specific tracking approach must itself be evaluated fresh
+once the gate above is actually met, not assumed from today's guesswork.
+That evaluation should determine, at minimum: which backend(s) to
+support (per CLAUDE.md's multi-backend principle, this evaluation should
+not rule out supporting more than one of MLflow/W&B as selectable
+options, but whether it's one, both, or something else entirely is an
+open question for that future evaluation, not a decision made here);
+what interface shape best fits whatever the second real training-loop
+subpackage's metric-history shape turns out to be (part (c)'s
+OTel-span-processor/exporter framing is one plausible direction worth
+weighing then, not a committed design); and whether this capability
+belongs in `dscraft.core` at all, versus living elsewhere, versus not
+being built as shared infrastructure at all. Two things from this
+evaluation should carry forward unconditionally, because they're
+already-locked constraints rather than tracking-specific choices: any
+implementation must ship behind its own opt-in extra (never a base
+dependency of `core` or any subpackage extra, per the issue's own
+constraint), and it must not invent a second, parallel metric-naming
+convention alongside `dscraft.core.telemetry`'s existing OTel schema
+(per part (c) and CLAUDE.md's locked "OTel is the shared telemetry
+schema" decision).
 
 ## What was NOT done in this pass
 
