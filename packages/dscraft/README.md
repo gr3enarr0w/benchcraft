@@ -179,6 +179,15 @@ available in this extra. The tree-based ML branch, TSFM zero-shot branch,
 self-healing preprocessing, and conformal-prediction leaderboard from the
 full LazyForecast design are deferred. Install via the `forecast` extra.
 
+In addition to the hermetic synthetic-panel tests and the `statsmodels`-
+bundled co2/nile real-dataset validation, this subpackage's test suite
+also validates `forecast()`/`backtest()` against a real published
+forecasting-competition benchmark (the M3 competition's "Other" group) via
+Nixtla's `datasetsforecast` -- a test-only dependency (like `statsmodels`)
+that downloads its data over the network on first use and is skipped
+(not failed) when offline; see
+`tests/forecast/test_datasetsforecast_validation.py`.
+
 ## `dscraft.graph`
 
 `PyGSparseAdapter` is the first concrete implementation of
