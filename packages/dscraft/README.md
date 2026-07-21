@@ -170,10 +170,14 @@ already ships in `statsforecast`. Backtest MAE/RMSE are computed via
 Nixtla's `utilsforecast` (the shared metrics/plotting/preprocessing-helper
 layer the rest of the nixtlaverse already assumes) rather than
 hand-rolled, so future backends added to this subpackage share one
-canonical metric implementation. The tree-based ML branch, TSFM zero-shot
-branch, self-healing preprocessing, and conformal-prediction leaderboard
-from the full LazyForecast design are deferred. Install via the `forecast`
-extra.
+canonical metric implementation. `decompose()` exposes STL/MSTL time
+series decomposition (plus an optional Box-Cox transform) as a
+standalone, inspectable diagnostic -- trend/seasonal/residual components
+returned as a tidy long-format DataFrame, not folded silently into
+`forecast()` -- via `statsmodels`/`scipy`, both already transitively
+available in this extra. The tree-based ML branch, TSFM zero-shot branch,
+self-healing preprocessing, and conformal-prediction leaderboard from the
+full LazyForecast design are deferred. Install via the `forecast` extra.
 
 ## `dscraft.graph`
 
