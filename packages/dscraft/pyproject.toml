@@ -75,11 +75,20 @@ clean = [
 # `dscraft[forecast,dev]` (the combination forecast's own tests actually
 # require, and the combination the `forecast` CI matrix job already
 # installs) pulls in statsmodels/scipy.
+# utilsforecast (issue #29) is a genuine runtime dependency, unlike
+# statsmodels above: backtest.py's MAE/RMSE computation is delegated to
+# utilsforecast.losses.mae/rmse rather than hand-rolled, so it belongs in
+# this extra unconditionally rather than as a test-only addition. It's
+# also a lightweight, numpy/pandas-based Apache-2.0 (Tier 1) dependency
+# statsforecast itself already transitively requires -- adding it here
+# explicitly documents the direct import in backtest.py rather than
+# relying on an undeclared transitive dependency.
 forecast = [
     "numpy>=1.24",
     "pandas>=2.0",
     "statsforecast>=1.7",
     "statsmodels>=0.14",
+    "utilsforecast>=0.2",
 ]
 # Module 4 (LazyGraph): sparse graph tensor adapter + MPNNs -- torch and
 # torch_geometric are unavoidable core deps of this subpackage's one
@@ -162,6 +171,7 @@ all = [
     "datasketch>=1.6",
     "statsforecast>=1.7",
     "statsmodels>=0.14",
+    "utilsforecast>=0.2",
     "scipy>=1.11",
     "torch>=2.5",
     "torch_geometric>=2.5",

@@ -166,7 +166,11 @@ autofits (`AutoARIMA`, `AutoETS`, `AutoCES`, `AutoTheta`), simple baselines
 `WindowAverage`, `SeasonalWindowAverage`), and the Croston family for
 intermittent-demand series (`CrostonClassic`, `CrostonOptimized`,
 `CrostonSBA`) — zero new dependencies, since every one of these classes
-already ships in `statsforecast`. The tree-based ML branch, TSFM zero-shot
+already ships in `statsforecast`. Backtest MAE/RMSE are computed via
+Nixtla's `utilsforecast` (the shared metrics/plotting/preprocessing-helper
+layer the rest of the nixtlaverse already assumes) rather than
+hand-rolled, so future backends added to this subpackage share one
+canonical metric implementation. The tree-based ML branch, TSFM zero-shot
 branch, self-healing preprocessing, and conformal-prediction leaderboard
 from the full LazyForecast design are deferred. Install via the `forecast`
 extra.
