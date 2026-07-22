@@ -155,28 +155,48 @@ jobs:
             # default page size.
             check_runs_json="$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs" --jq '.check_runs')"
 
+            # Some required contexts (e.g. CodeRabbit) post via the older,
+            # separate Commit Status API and never appear in check-runs at
+            # all. The combined-status endpoint aggregates every status
+            # source (including the legacy Statuses API) and is the only
+            # place those contexts show up, so both sources must be
+            # consulted per-context below -- a context lives in whichever
+            # one actually reports it, never both by convention.
+            status_json="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/status" --jq '.statuses')"
+
             all_green=true
             failed=false
 
             while IFS= read -r context; do
               [[ -z "$context" ]] && continue
 
-              # Conclusion of the most recently-started run for this
-              # context name. Single-line python3 -c deliberately -- no
-              # embedded newlines, so this is immune to both YAML
-              # block-scalar indentation rules and Python's own
-              # top-level-indentation rules, neither of which tolerate a
-              # heredoc/multi-line string indented to match this file's
-              # surrounding bash style.
-              conclusion="$(echo "$check_runs_json" | python3 -c "import json, sys; runs = json.load(sys.stdin); name = sys.argv[1]; matches = [r for r in runs if r.get('name') == name]; matches.sort(key=lambda r: r.get('started_at') or ''); print((matches[-1].get('conclusion') or '') if matches else '')" "$context")"
+              # Resolve this context's state by checking check-runs (the
+              # "status"/"conclusion" schema, e.g. completed/success) and
+              # the combined-status endpoint (the single "state" field,
+              # e.g. success/failure/pending/error) and normalizing both
+              # into the same three buckets this loop already uses:
+              # "success", "failure" (the failure-family), or "" (not yet
+              # resolved / absent from both). A context is only "pending"
+              # if it's missing from BOTH sources -- if either source has
+              # a matching entry, that match's normalized state wins.
+              # Single-line python3 -c deliberately -- no embedded
+              # newlines, so this is immune to both YAML block-scalar
+              # indentation rules and Python's own top-level-indentation
+              # rules, neither of which tolerate a heredoc/multi-line
+              # string indented to match this file's surrounding bash
+              # style.
+              result="$(echo "$check_runs_json" | python3 -c "import json, sys; check_runs = json.load(sys.stdin); statuses = json.loads(sys.argv[2]); name = sys.argv[1]; cr_matches = [r for r in check_runs if r.get('name') == name]; cr_matches.sort(key=lambda r: r.get('started_at') or ''); cr_present = bool(cr_matches); cr_conclusion = cr_matches[-1].get('conclusion') if cr_present else None; cr_state = (('success' if cr_conclusion == 'success' else ('failure' if cr_conclusion in ('failure', 'cancelled', 'timed_out', 'action_required') else '')) if cr_present else None); st_matches = [s for s in statuses if s.get('context') == name]; st_present = bool(st_matches); st_state_raw = st_matches[0].get('state') if st_present else None; st_state = (('success' if st_state_raw == 'success' else ('failure' if st_state_raw in ('failure', 'error') else '')) if st_present else None); found = [s for s in (cr_state, st_state) if s is not None]; detail = 'check-run=' + (str(cr_conclusion) if cr_present else 'absent') + ',status=' + (str(st_state_raw) if st_present else 'absent'); state = ('failure' if 'failure' in found else ('success' if found and all(s == 'success' for s in found) else '')); print(state + ' ' + detail)" "$context" "$status_json")"
 
-              if [[ "$conclusion" == "failure" || "$conclusion" == "cancelled" || "$conclusion" == "timed_out" || "$conclusion" == "action_required" ]]; then
-                echo "Required check '${context}' concluded '${conclusion}' -- not proceeding."
+              state="${result%% *}"
+              detail="${result#* }"
+
+              if [[ "$state" == "failure" ]]; then
+                echo "Required check '${context}' is failing (${detail}) -- not proceeding."
                 failed=true
                 break
               fi
 
-              if [[ "$conclusion" != "success" ]]; then
+              if [[ "$state" != "success" ]]; then
                 all_green=false
               fi
             done <<< "$required_contexts"
@@ -427,21 +447,30 @@ jobs:
           while true; do
             check_runs_json="$(gh api --paginate "repos/${REPO}/commits/${new_head_sha}/check-runs" --jq '.check_runs')"
 
+            # Same combined-source lookup as the initial poll above -- see
+            # that step's comments for why both check-runs and the
+            # combined-status endpoint must be consulted (e.g. CodeRabbit
+            # only ever shows up in the latter).
+            status_json="$(gh api "repos/${REPO}/commits/${new_head_sha}/status" --jq '.statuses')"
+
             all_green=true
             failed=false
 
             while IFS= read -r context; do
               [[ -z "$context" ]] && continue
 
-              conclusion="$(echo "$check_runs_json" | python3 -c "import json, sys; runs = json.load(sys.stdin); name = sys.argv[1]; matches = [r for r in runs if r.get('name') == name]; matches.sort(key=lambda r: r.get('started_at') or ''); print((matches[-1].get('conclusion') or '') if matches else '')" "$context")"
+              result="$(echo "$check_runs_json" | python3 -c "import json, sys; check_runs = json.load(sys.stdin); statuses = json.loads(sys.argv[2]); name = sys.argv[1]; cr_matches = [r for r in check_runs if r.get('name') == name]; cr_matches.sort(key=lambda r: r.get('started_at') or ''); cr_present = bool(cr_matches); cr_conclusion = cr_matches[-1].get('conclusion') if cr_present else None; cr_state = (('success' if cr_conclusion == 'success' else ('failure' if cr_conclusion in ('failure', 'cancelled', 'timed_out', 'action_required') else '')) if cr_present else None); st_matches = [s for s in statuses if s.get('context') == name]; st_present = bool(st_matches); st_state_raw = st_matches[0].get('state') if st_present else None; st_state = (('success' if st_state_raw == 'success' else ('failure' if st_state_raw in ('failure', 'error') else '')) if st_present else None); found = [s for s in (cr_state, st_state) if s is not None]; detail = 'check-run=' + (str(cr_conclusion) if cr_present else 'absent') + ',status=' + (str(st_state_raw) if st_present else 'absent'); state = ('failure' if 'failure' in found else ('success' if found and all(s == 'success' for s in found) else '')); print(state + ' ' + detail)" "$context" "$status_json")"
 
-              if [[ "$conclusion" == "failure" || "$conclusion" == "cancelled" || "$conclusion" == "timed_out" || "$conclusion" == "action_required" ]]; then
-                echo "Required check '${context}' concluded '${conclusion}' after branch update -- not proceeding."
+              state="${result%% *}"
+              detail="${result#* }"
+
+              if [[ "$state" == "failure" ]]; then
+                echo "Required check '${context}' is failing (${detail}) after branch update -- not proceeding."
                 failed=true
                 break
               fi
 
-              if [[ "$conclusion" != "success" ]]; then
+              if [[ "$state" != "success" ]]; then
                 all_green=false
               fi
             done <<< "$required_contexts"
